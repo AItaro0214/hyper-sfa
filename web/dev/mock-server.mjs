@@ -1,0 +1,176 @@
+// 画面の動作確認用の簡易サーバー。バックエンドの代わりに固定データを返す（依存なし）。
+// 使い方: node web/dev/mock-server.mjs [port]   ログイン: admin / password123
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const WEB = path.resolve(here, '..');
+const CORE = path.resolve(WEB, '../packages/core/src');
+const PORT = Number(process.argv[2] || process.env.PORT || 8787);
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png' };
+
+const ME = {
+  id: 'u1', email: 'admin@example.co.jp', loginId: 'admin', displayName: '山田 管理', position: '開発者', level: 'dev',
+  deptIds: ['d1'], departments: [{ id: 'd1', name: '営業部' }], mustChangePassword: false,
+  capabilities: { seeAllCards: true, editCards: true, deleteAnyCard: true, assignOtherDepts: true, register: true, admin: true, dev: true, viewHistory: true },
+};
+const DEPTS = [{ id: 'd1', name: '営業部', order: 1, active: true }, { id: 'd2', name: '開発部', order: 2, active: true }, { id: 'd3', name: '総務部', order: 3, active: true }];
+const USERS = [
+  { id: 'u1', email: 'admin@example.co.jp', loginId: 'admin', displayName: '山田 管理', position: '開発者', role: 'admin', deptIds: ['d1'], departments: [{ id: 'd1', name: '営業部' }], status: 'active', lastLoginAt: new Date().toISOString() },
+  { id: 'u2', email: 'hanako@example.co.jp', loginId: 'hanako', displayName: '佐藤 花子', position: 'MG', role: 'member', deptIds: ['d1', 'd2'], departments: [{ id: 'd1', name: '営業部' }, { id: 'd2', name: '開発部' }], status: 'invited', lastLoginAt: null },
+];
+const card = (i, o = {}) => ({
+  id: `c${i}`, status: 'confirmed', company: `株式会社サンプル${i}`, department: '営業部', name: `田中 太郎${i}`, nameReading: 'たなか たろう',
+  phones: ['03-1234-5678'], mobiles: ['090-1234-5678'], emails: [`taro${i}@example.co.jp`], note: '役職: 部長', rawText: 'raw',
+  deptIds: ['d1'], departments: [{ id: 'd1', name: '営業部' }], imageUrls: { thumb: `/mock-img/c${i}.svg`, front: `/mock-img/c${i}.svg`, back: null },
+  createdBy: { id: 'u2', name: '佐藤 花子' }, createdAt: new Date().toISOString(), updatedBy: { id: 'u1', name: '山田 管理' }, updatedAt: new Date().toISOString(),
+  editCount: 1, scanCount: 1, version: 1, failure: null, ...o,
+});
+const CARDS = Array.from({ length: 75 }, (_, i) => card(i + 1));
+const scans = new Map();
+let loggedIn = false;
+let devSettings = { keys: { gemini: { configured: true, last4: 'ab12', updatedAt: new Date().toISOString() }, openai: { configured: false } }, models: { card: 'gemini-3.5-flash-lite', transcribe: 'gemini-3.5-flash-lite', summarize: 'gemini-3.6-flash' }, prompts: {} };
+const MODELS = [
+  { id: 'gemini-3.5-flash-lite', provider: 'gemini', label: 'Gemini 3.5 Flash-Lite', uses: ['card', 'transcribe', 'summarize'], pricing: { input: 0.25, output: 1.5, audioInput: 0.5 }, active: true, builtin: true },
+  { id: 'gemini-3.6-flash', provider: 'gemini', label: 'Gemini 3.6 Flash', uses: ['card', 'summarize'], pricing: { input: 0.5, output: 3, changesAt: '2027-01-01', next: { input: 1, output: 6 } }, active: true, builtin: true },
+  { id: 'gemini-3.1-flash-lite', provider: 'gemini', label: 'Gemini 3.1 Flash-Lite', uses: ['card'], pricing: { input: 0.1, output: 0.4 }, shutdownAt: '2027-05-07', active: true, builtin: true },
+];
+const PROMPTS = { card: 'カード用プロンプト', transcribe: '文字起こし用 {{TITLE}}', summarize: '議事録用 {{TRANSCRIPT}}' };
+const promptVer = { card: 1, transcribe: 1, summarize: 1 };
+
+const send = (res, status, body, headers = {}) => {
+  const data = body === undefined ? '' : JSON.stringify(body);
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
+  res.end(data);
+};
+const err = (res, status, code, message, details) => send(res, status, { error: { code, message, details } });
+const readBody = (req) => new Promise((r) => { const c = []; req.on('data', (d) => c.push(d)); req.on('end', () => { const t = Buffer.concat(c).toString(); try { r(t ? JSON.parse(t) : {}); } catch { r({}); } }); });
+
+function cardView(c) {
+  const s = scans.get(c.id);
+  if (s && c.status === 'processing' && Date.now() - s > 2500) c.status = 'review';
+  return c;
+}
+const norm = (s) => String(s || '').normalize('NFKC').toLowerCase();
+
+async function api(req, res, url) {
+  const p = url.pathname, m = req.method, q = url.searchParams;
+  const body = ['POST', 'PUT', 'PATCH'].includes(m) ? await readBody(req) : {};
+  let g;
+  if (p === '/api/config') return send(res, 200, { appName: 'hyper-sfa (mock)', edition: 'cloudflare', authMode: 'password', features: { departments: true, positions: true, userImport: true, minutes: true }, limits: { scanPerDay: 200, recordingMaxSec: 7200, segmentSec: 600 }, setupRequired: false });
+  if (p === '/api/auth/login') {
+    if (body.loginId === 'admin' && body.password === 'password123') { loggedIn = true; return send(res, 200, ME, { 'Set-Cookie': 'sid=mock; Path=/; HttpOnly' }); }
+    return err(res, 401, 'unauthorized', 'ID またはパスワードが違います');
+  }
+  if (p === '/api/auth/logout') { loggedIn = false; return send(res, 200, {}, { 'Set-Cookie': 'sid=; Path=/; Max-Age=0' }); }
+  if (p === '/api/auth/change-password') return send(res, 200, {});
+  if (!loggedIn) return err(res, 401, 'unauthorized', 'ログインしてください');
+  if (p === '/api/me') return send(res, 200, ME);
+  if (p === '/api/departments') return send(res, 200, { items: DEPTS });
+  if (p === '/api/directory') return send(res, 200, { items: USERS.map((u) => ({ id: u.id, displayName: u.displayName, email: u.email, departments: u.departments })) });
+  if (p === '/api/uploads') return send(res, 200, { uploads: (body.kinds || []).map((k) => ({ kind: k, key: `k-${k}-${Date.now()}`, url: `/mock-upload/${k}`, method: 'PUT', headers: { 'Content-Type': 'image/jpeg' } })) });
+  if (p === '/api/cards/scan') {
+    const id = `c${CARDS.length + 1}`;
+    CARDS.unshift(card(CARDS.length + 1, { id, status: 'processing', company: '株式会社読み取り', name: '新規 花子', version: 1, duplicates: [{ id: 'c1', company: '株式会社サンプル1', name: '田中 太郎1', reason: 'email' }] }));
+    scans.set(id, Date.now());
+    return send(res, 202, { id, status: 'processing' });
+  }
+  if (p === '/api/cards' && m === 'GET') {
+    let items = CARDS.filter((c) => c.status !== 'failed');
+    const has = (field, qv) => norm(qv).split(/\s+/).filter(Boolean).every((w) => norm(field).includes(w));
+    if (q.get('company')) items = items.filter((c) => has(c.company, q.get('company')));
+    if (q.get('name')) items = items.filter((c) => has(c.name, q.get('name')));
+    if (q.get('department')) items = items.filter((c) => has(c.department, q.get('department')));
+    if (q.get('email')) items = items.filter((c) => has(c.emails.join(' '), q.get('email')));
+    if (q.get('phone')) items = items.filter((c) => (c.phones.concat(c.mobiles)).join('').replace(/\D/g, '').includes(q.get('phone').replace(/\D/g, '')));
+    if (q.get('note')) items = items.filter((c) => has(c.note, q.get('note')));
+    if (q.get('dept')) items = items.filter((c) => c.deptIds.includes(q.get('dept')));
+    const start = Number(q.get('cursor') || 0), limit = Number(q.get('limit') || 50);
+    const page = items.slice(start, start + limit).map(({ rawText, ...r }) => r);
+    return send(res, 200, { items: page, nextCursor: start + limit < items.length ? String(start + limit) : null, total: items.length });
+  }
+  if ((g = p.match(/^\/api\/cards\/([^/]+)(\/[a-z]+)?$/))) {
+    const c = CARDS.find((x) => x.id === g[1]);
+    if (!c) return err(res, 404, 'not_found', '名刺が見つかりません');
+    const sub = g[2];
+    if (!sub && m === 'GET') return send(res, 200, cardView(c));
+    if (sub === '/status') { cardView(c); return send(res, 200, c.status === 'processing' ? { status: 'processing' } : { status: c.status, card: c }); }
+    if (sub === '/rescan') { c.status = 'processing'; scans.set(c.id, Date.now()); return send(res, 202, { status: 'processing' }); }
+    if (sub === '/minutes') return send(res, 200, { items: [{ id: 'm1', title: `${c.company} 定例`, heldAt: new Date().toISOString(), status: 'done' }], nextCursor: null });
+    if (!sub && m === 'PUT') {
+      if (body.version !== c.version) return err(res, 409, 'conflict', 'ほかの人が先に更新しました');
+      Object.assign(c, { company: body.company, department: body.department, name: body.name, nameReading: body.nameReading, phones: body.phones, mobiles: body.mobiles, emails: body.emails, note: body.note, deptIds: body.deptIds || c.deptIds, version: c.version + 1, updatedAt: new Date().toISOString() });
+      c.departments = c.deptIds.map((id) => DEPTS.find((d) => d.id === id)).filter(Boolean);
+      if (body.confirm) c.status = 'confirmed';
+      return send(res, 200, c);
+    }
+    if (!sub && m === 'DELETE') { CARDS.splice(CARDS.indexOf(c), 1); return send(res, 204); }
+  }
+  if (p === '/api/minutes') return send(res, 200, { items: [], nextCursor: null });
+  if (p === '/api/admin/users' && m === 'GET') return send(res, 200, { items: USERS });
+  if (p === '/api/admin/users' && m === 'POST') { USERS.push({ id: `u${USERS.length + 1}`, loginId: body.loginId, email: body.email, displayName: body.displayName, position: body.position, role: body.role, deptIds: [], departments: [], status: 'invited' }); return send(res, 200, { tempPassword: 'Tmp-Pass-1234' }); }
+  if ((g = p.match(/^\/api\/admin\/users\/([^/]+)$/)) && m === 'PATCH') { const u = USERS.find((x) => x.id === g[1]); if (u) { Object.assign(u, body); if (body.deptIds) u.departments = body.deptIds.map((id) => DEPTS.find((d) => d.id === id)).filter(Boolean); } return send(res, 200, u || {}); }
+  if (p.endsWith('/temp-password')) return send(res, 200, { tempPassword: 'New-Temp-5678' });
+  if (p === '/api/admin/users/import/preview') return send(res, 200, { create: (body.rows || []).slice(0, 2).map((r) => ({ ...r })), update: [], unchanged: [], errors: (body.rows || []).length > 2 ? [{ row: 3, email: body.rows[2].email, message: '会社のドメインではありません' }] : [], newDepartments: [{ name: '営業 部', count: 1, similarTo: '営業部' }] });
+  if (p === '/api/admin/users/import') return send(res, 200, { created: 2, updated: 0, departmentsCreated: 1 });
+  if (p === '/api/admin/departments' && m === 'GET') return send(res, 200, { items: DEPTS });
+  if (p === '/api/admin/departments' && m === 'POST') { DEPTS.push({ id: `d${DEPTS.length + 1}`, name: body.name, order: body.order, active: true }); return send(res, 200, {}); }
+  if ((g = p.match(/^\/api\/admin\/departments\/([^/]+)$/)) && m === 'PATCH') { Object.assign(DEPTS.find((d) => d.id === g[1]) || {}, body); return send(res, 200, {}); }
+  if (p === '/api/admin/history') return send(res, 200, { items: [{ id: 'h1', type: 'edit', at: new Date().toISOString(), actor: { id: 'u2', name: '佐藤 花子', deptName: '営業部' }, source: 'search', card: { id: 'c1', company: '株式会社サンプル1', name: '田中 太郎1' }, changes: [{ field: 'phones', before: ['03-1234-5678'], after: ['03-1234-5679'] }] }, { id: 'h2', type: 'create', at: new Date().toISOString(), actor: { id: 'u2', name: '佐藤 花子', deptName: '営業部' }, source: 'review', card: { id: 'c2', company: '株式会社サンプル2', name: '田中 太郎2' }, changes: [] }], nextCursor: null });
+  if (p === '/api/admin/history/summary') return send(res, 200, { byUser: [{ id: 'u2', name: '佐藤 花子', deptName: '営業部', count: 12 }], byDept: [{ id: 'd1', name: '営業部', count: 12 }] });
+  if (p.startsWith('/api/admin/cards/')) return send(res, 200, { items: [] });
+  if (p === '/api/dev/settings') return send(res, 200, devSettings);
+  if ((g = p.match(/^\/api\/dev\/keys\/(gemini|openai)(\/test)?$/))) {
+    if (g[2]) return send(res, 200, { ok: true, models: 12 });
+    devSettings.keys[g[1]] = { configured: true, last4: String(body.key || '').slice(-4), updatedAt: new Date().toISOString() };
+    return send(res, 200, devSettings);
+  }
+  if (p === '/api/dev/models/available') return send(res, 200, { items: ['gemini-3.8-flash', 'gemini-3.7-flash'] });
+  if (p === '/api/dev/models' && m === 'GET') return send(res, 200, { items: MODELS });
+  if (p === '/api/dev/models' && m === 'POST') { MODELS.push({ ...body, builtin: false }); return send(res, 200, {}); }
+  if ((g = p.match(/^\/api\/dev\/models\/([^/]+)$/)) && m === 'PATCH') { Object.assign(MODELS.find((x) => x.id === g[1]) || {}, body); return send(res, 200, {}); }
+  if (p === '/api/dev/model') { devSettings.models[body.use] = body.modelId; return send(res, 200, devSettings); }
+  if ((g = p.match(/^\/api\/dev\/prompts\/(card|transcribe|summarize)(\/history|\/revert)?$/))) {
+    const k = g[1];
+    if (g[2] === '/history') return send(res, 200, { items: [{ version: 1, savedBy: { name: '山田 管理' }, savedAt: new Date().toISOString(), text: PROMPTS[k] }] });
+    if (g[2] === '/revert') return send(res, 200, { kind: k, text: PROMPTS[k], version: ++promptVer[k], isDefault: false });
+    if (m === 'PUT') { PROMPTS[k] = body.text || `初期値の${k}プロンプト`; promptVer[k]++; }
+    return send(res, 200, { kind: k, text: PROMPTS[k], version: promptVer[k], savedBy: { name: '山田 管理' }, savedAt: new Date().toISOString(), isDefault: promptVer[k] === 1 });
+  }
+  if (p === '/api/dev/scan-test') return send(res, 200, { card: { company: '株式会社テスト', name: 'テスト 太郎' }, raw: '{"company":"株式会社テスト"}', repairs: ['fence'], usage: { inputTokens: 2500, outputTokens: 500 }, elapsedMs: 1800 });
+  if (p === '/api/dev/minutes-test' && m === 'POST') return send(res, 202, { jobId: 'j1' });
+  if (p === '/api/dev/minutes-test/j1') return send(res, 200, { text: '## 要点\n- テスト', usage: { inputTokens: 100, outputTokens: 50 }, elapsedMs: 900 });
+  if (p === '/api/dev/export') return send(res, 200, { url: '/mock-export.csv', expiresAt: new Date(Date.now() + 300000).toISOString(), rows: 75 });
+  if (p === '/api/dev/usage') return send(res, 200, { months: [{ month: new Date().toISOString().slice(0, 7), byUse: { card: { count: 75, failed: 2, inputTokens: 187500, outputTokens: 37500, cost: 0.4 }, summarize: { count: 5, failed: 0, inputTokens: 150000, outputTokens: 15000, cost: 0.9 } }, byModel: [{ modelId: 'gemini-3.5-flash-lite', count: 75, failed: 2, inputTokens: 187500, outputTokens: 37500, cost: 0.4 }] }] });
+  if (p === '/api/dev/usage/minutes') return send(res, 200, { items: [{ user: { id: 'u2', name: '佐藤 花子', departments: ['営業部'], status: 'active' }, recordings: 18, recordedSec: 52320, transcribe: { first: 18, retry: 2 }, summarize: { first: 18, retry: 5 }, failed: 1, transcribedSec: 60000, inputTokens: 100, outputTokens: 50, cost: 2.31, lastUsedAt: new Date().toISOString() }, { user: { id: 'u1', name: '山田 管理', departments: ['営業部'], status: 'active' }, recordings: 3, recordedSec: 7800, transcribe: { first: 3, retry: 0 }, summarize: { first: 3, retry: 0 }, failed: 0, transcribedSec: 7800, inputTokens: 10, outputTokens: 5, cost: 0.36, lastUsedAt: new Date().toISOString() }], total: { recordings: 21, recordedSec: 60120, transcribe: { first: 21, retry: 2 }, summarize: { first: 21, retry: 5 }, failed: 1, cost: 2.67 } });
+  if (p.startsWith('/api/dev/usage/minutes/')) return send(res, 200, { months: [{ month: '2026-09', recordedSec: 3600, transcribeCount: 3, cost: 0.5 }], events: [{ at: new Date().toISOString(), kind: 'transcribe', durationSec: 4320, modelId: 'gemini-3.5-flash-lite', ok: true, inputTokens: 144300, outputTokens: 27900, cost: 0.3 }] });
+  if (p === '/api/dev/audit') return send(res, 200, { items: [{ at: new Date().toISOString(), actor: { name: '山田 管理' }, action: 'key.update', detail: { provider: 'gemini' } }], nextCursor: null });
+  if (p === '/api/dev/positions') return err(res, 404, 'not_found', 'なし');
+  return err(res, 404, 'not_found', `モックに無い API: ${m} ${p}`);
+}
+
+function serveFile(res, file) {
+  fs.readFile(file, (e, data) => {
+    if (e) { res.writeHead(404); return res.end('not found'); }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
+    res.end(data);
+  });
+}
+const inside = (root, p) => { const f = path.resolve(root, '.' + p); return f.startsWith(root) ? f : null; };
+
+http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  try {
+    if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+    if (url.pathname.startsWith('/mock-upload/')) { req.resume(); return req.on('end', () => { res.writeHead(200); res.end(); }); }
+    if (url.pathname === '/mock-export.csv') { res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8' }); return res.end('﻿id,name\r\nc1,田中\r\n'); }
+    if (url.pathname.startsWith('/mock-img/')) { res.writeHead(200, { 'Content-Type': 'image/svg+xml' }); return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" fill="#dfe8fb"/><text x="20" y="110" font-size="24">名刺サンプル</text></svg>'); }
+    if (url.pathname.startsWith('/core/')) { const f = inside(CORE, url.pathname.slice(5)); return f ? serveFile(res, f) : (res.writeHead(403), res.end()); }
+    const f = url.pathname === '/' ? null : inside(WEB, url.pathname);
+    if (f && fs.existsSync(f) && fs.statSync(f).isFile()) return serveFile(res, f);
+    // それ以外は History API のルーティング用に index.html を返す。
+    return serveFile(res, path.join(WEB, 'index.html'));
+  } catch (e) { send(res, 500, { error: { code: 'internal', message: String(e.message) } }); }
+}).listen(PORT, () => console.log(`mock server: http://localhost:${PORT}  (ID: admin / パスワード: password123)`));

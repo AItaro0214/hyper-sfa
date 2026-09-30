@@ -69,7 +69,9 @@
 }
 ```
 
-権限の段階と `capabilities` の対応は `docs/design.md` §9。Cloudflare 版は `admin` → `dev`（全部 `true`）、`member` → `org_edit`（`admin` `dev` `viewHistory` `deleteAnyCard` は `false`、`seeAllCards` `editCards` `register` は `true`、`assignOtherDepts` は `false`）。
+権限の段階と `capabilities` の対応は `docs/design.md` §9。Cloudflare 版は `admin` → `dev`（全部 `true`）、`member` → `org_edit`（`admin` `dev` `viewHistory` は `false`、`seeAllCards` `editCards` `register` `deleteAnyCard` は `true`（全員が削除できる。cloudflare-small-design §4）、`assignOtherDepts` は `false`）。
+
+想定外のエラーは `500 { "error": { "code": "internal", "message": "..." } }`。`409` の `version` 不一致には `error.current`（最新の名刺）を付ける。
 
 ## 3. ログイン
 

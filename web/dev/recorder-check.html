@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>録音の単体確認</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 16px; }
+  button { min-height: 44px; padding: 0 16px; margin: 4px 4px 4px 0; }
+  pre { background: #f3f4f6; padding: 8px; max-height: 320px; overflow: auto; white-space: pre-wrap; }
+  .bar { height: 12px; background: #eee; margin: 4px 0; } .bar i { display: block; height: 100%; width: 0; background: #16a34a; }
+</style>
+</head>
+<body>
+<h1>録音の単体確認</h1>
+<p>土台に依存しません。https か localhost で開いてください。アップロードは差し替えてあり、送る内容はここに出るだけです（サーバーには送りません）。区切りは短く（15 秒）してあります。</p>
+<label>区切りの秒数 <input id="segsec" type="number" value="15" min="5"></label>
+<label><input id="fail" type="checkbox"> アップロードを失敗させる（再試行の確認）</label>
+<label><input id="cf" type="checkbox"> Cloudflare 版（通しの 1 本も取る）</label>
+<div>
+  <button id="web">ウェブ会議を録音</button>
+  <button id="room">ここの音声を録音</button>
+  <button id="pause" disabled>一時停止 / 再開</button>
+  <button id="finish" disabled>録音を終える</button>
+  <button id="idb">IndexedDB の chunk を数える</button>
+  <button id="clear">IndexedDB を空にする</button>
+</div>
+<div>パソコンの音<div class="bar"><i id="m-system"></i></div>マイク<div class="bar"><i id="m-mic"></i></div></div>
+<p id="info"></p>
+<pre id="log"></pre>
+<script type="module">
+import { startWebMeeting, startRoom, readLevel, explainMediaError, supportsWebMeeting, webMeetingUnavailableReason } from '../js/recorder/capture.js';
+import { Segmenter } from '../js/recorder/segmenter.js';
+import { listPending, deleteMinute } from '../js/recorder/store.js';
+
+const $ = (id) => document.getElementById(id);
+const log = (...a) => { $('log').textContent += a.join(' ') + '\n'; console.log(...a); };
+log('ウェブ会議の録音:', supportsWebMeeting() ? '使える' : webMeetingUnavailableReason());
+
+const MINUTE_ID = 'CHECK' + Date.now();
+// api の差し替え。サーバーに送らず、送る内容をコンソールに出す。
+const fakeApi = {
+  async post(path, body) {
+    log('POST', path, JSON.stringify(body));
+    if ($('fail').checked) throw new Error('（確認用の失敗）');
+    return { key: 'k', url: 'https://example.invalid/put', method: 'PUT', headers: { 'Content-Type': body.mime } };
+  },
+  async put(path) { log('PUT', path); },
+  async upload(url, blob, headers) {
+    log('UPLOAD', url, blob.type, blob.size + ' bytes');
+    if (window.__dl) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'seg'; }
+  },
+};
+
+let cap = null, seg = null, raf = 0;
+async function begin(kind) {
+  try {
+    cap = kind === 'web'
+      ? await startWebMeeting({ onShareEnded: () => log('共有が止まりました') })
+      : await startRoom({});
+  } catch (e) { log('失敗:', e.name, explainMediaError(e, e.mediaKind || (kind === 'web' ? 'display' : 'mic'))); return; }
+  seg = new Segmenter({
+    minuteId: MINUTE_ID, capture: cap, segmentSec: Number($('segsec').value) || 15, maxSec: 7200, api: fakeApi,
+    keepFullAudio: $('cf').checked,
+    onChange: (i) => { $('info').textContent = `${i.state} 経過 ${i.elapsedSec}s 保存済み ${i.uploadedSec}s 送信待ち ${i.pending}${i.failing ? '（失敗中）' : ''}`; },
+    onWarning: () => log('あと 10 分'), onAutoStop: () => log('自動停止'),
+    onInterrupted: () => log('中断'), onUploadError: (e) => log('送信失敗:', e.message),
+    onCaptureDone: () => cap.stop(),
+  });
+  await seg.start();
+  $('pause').disabled = $('finish').disabled = false;
+  const loop = () => {
+    for (const ch of ['system', 'mic']) $('m-' + ch).style.width = Math.round(readLevel(cap.analysers[ch]) * 100) + '%';
+    raf = requestAnimationFrame(loop);
+  };
+  loop();
+}
+$('web').onclick = () => begin('web');
+$('room').onclick = () => begin('room');
+$('pause').onclick = () => (seg.state === 'recording' ? seg.pause() : seg.resume());
+$('finish').onclick = async () => {
+  const r = await seg.finish();
+  cancelAnimationFrame(raf);
+  log('終了', JSON.stringify(r));
+  const full = seg.fullAudio();
+  if (full) log('通しの 1 本:', full.mime, full.blob.size + ' bytes');
+  $('pause').disabled = $('finish').disabled = true;
+};
+$('idb').onclick = async () => log('IndexedDB に残っている区切り:', JSON.stringify(await listPending()));
+$('clear').onclick = async () => { for (const p of await listPending()) await deleteMinute(p.minuteId); log('空にしました'); };
+</script>
+</body>
+</html>

@@ -5,7 +5,7 @@ import { join, extname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:');
-const SKIP = new Set(['node_modules', '.git', '.wrangler', 'dist', 'build', '.terraform']);
+const SKIP = new Set(['node_modules', '.git', '.wrangler', '.assets', 'dist', 'build', '.terraform']);
 
 function walk(dir, out) {
   for (const name of readdirSync(dir)) {

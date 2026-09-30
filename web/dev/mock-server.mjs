@@ -71,6 +71,17 @@ async function api(req, res, url) {
   if (p === '/api/departments') return send(res, 200, { items: DEPTS });
   if (p === '/api/directory') return send(res, 200, { items: USERS.map((u) => ({ id: u.id, displayName: u.displayName, email: u.email, departments: u.departments })) });
   if (p === '/api/uploads') return send(res, 200, { uploads: (body.kinds || []).map((k) => ({ kind: k, key: `k-${k}-${Date.now()}`, url: `/mock-upload/${k}`, method: 'PUT', headers: { 'Content-Type': 'image/jpeg' } })) });
+  if (m === 'PUT' && p.startsWith('/api/uploads/')) return send(res, 200, { ok: true });
+  if ((g = p.match(/^\/api\/cards\/([^/]+)\/images\/(replace|optimized)$/)) && m === 'POST') {
+    const c = CARDS.find((x) => x.id === g[1]);
+    if (!c) return err(res, 404, 'not_found', '名刺が見つかりません');
+    if (g[2] === 'replace') {
+      const kinds = ['front', ...(c.imageUrls.back ? ['back'] : [])];
+      return send(res, 200, { uploads: kinds.map((kind) => ({ kind, url: `/api/uploads/cards/${'0'.repeat(26)}/${kind}.jpg`, method: 'PUT', headers: { 'Content-Type': 'image/jpeg' } })) });
+    }
+    c.imageOptimized = true; c.imageOptimizedAt = new Date().toISOString();
+    return send(res, 200, { imageOptimized: true, imageOptimizedAt: c.imageOptimizedAt });
+  }
   if (p === '/api/cards/scan') {
     const id = `c${CARDS.length + 1}`;
     CARDS.unshift(card(CARDS.length + 1, { id, status: 'processing', company: '株式会社読み取り', name: '新規 花子', version: 1, duplicates: [{ id: 'c1', company: '株式会社サンプル1', name: '田中 太郎1', reason: 'email' }] }));

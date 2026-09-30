@@ -286,7 +286,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "images" {
     filter {}
 
     noncurrent_version_expiration {
-      noncurrent_days = 90
+      noncurrent_days = 30
     }
 
     abort_incomplete_multipart_upload {

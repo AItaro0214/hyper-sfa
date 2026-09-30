@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { esc, toast, confirmDialog, formatDate, formatDateTime, errorMessage } from '../ui.js';
 import { navigate } from '../router.js';
+import { optimizeCardImages } from '../imageUtil.js';
 import { STATUS_LABEL, mountCardForm, cardViewHtml, bindZoom } from './cardEdit.js';
 
 const MINUTES_STATUS = { recording: '録音中', uploaded: 'アップロード済み', queued: '待機中', transcribing: '文字起こし中', summarizing: '議事録作成中', done: '完了', failed: '失敗' };
@@ -42,6 +43,7 @@ export async function renderCardDetail(container, { id }) {
         ${canRescan ? '<button type="button" class="btn" data-rescan>読み取り直し</button>' : ''}
         ${canDelete(card) ? '<button type="button" class="btn btn-danger" data-del>削除</button>' : ''}
       </div>
+      ${canRescan ? `<p class="muted" data-shrunk-note ${card.imageOptimized ? '' : 'hidden'}>縮小した画像で読み取るため、精度が落ちることがあります</p>` : ''}
       ${state.config.features.minutes ? '<section><h2>この人との議事録</h2><div data-minutes><p class="muted">読み込んでいます…</p></div></section>' : ''}
       ${caps.viewHistory ? '<section><h2>変更履歴</h2><div data-history><p class="muted">読み込んでいます…</p></div></section>' : ''}`;
     bindZoom(root);
@@ -60,6 +62,10 @@ export async function renderCardDetail(container, { id }) {
       try { await api.post(`${path}/rescan`); toast('読み取り直しています'); poll(); } catch (e) { toast(errorMessage(e), 'error'); }
     });
     if (card.status === 'processing') poll();
+    // 確認済みで未縮小なら、画面を止めずに裏で縮小する。済んだら注意書きを出す
+    if (canEdit && card.status === 'confirmed' && !card.imageOptimized) {
+      optimizeCardImages(card).then((ok) => { if (ok && !stopped) root.querySelector('[data-shrunk-note]')?.removeAttribute('hidden'); });
+    }
     loadMinutes();
     loadHistory();
   }

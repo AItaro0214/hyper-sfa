@@ -106,6 +106,7 @@
   "createdBy": { "id": "...", "name": "佐藤 花子" }, "createdAt": "...",
   "updatedBy": { "id": "...", "name": "鈴木 一郎" }, "updatedAt": "...",
   "editCount": 2, "scanCount": 1, "version": 3,
+  "imageOptimized": false,
   "failure": { "kind": "parse" | "truncated" | "empty" | "blocked" | "provider" | "not_configured", "message": "...", "retryable": true } | null,
   "duplicates": [{ "id": "...", "company": "...", "name": "...", "reason": "email" | "company_name" }]
 }
@@ -126,6 +127,10 @@
 | `GET /api/cards/{id}` | 詳細 |
 | `PUT /api/cards/{id}` | `{ company, department, name, nameReading, phones, mobiles, emails, note, deptIds, version, source: "review" | "search" | "detail", confirm: true }`。`confirm: true` で `review` → `confirmed`。`version` 不一致は 409 |
 | `DELETE /api/cards/{id}` | 論理削除 |
+| `POST /api/cards/{id}/images/replace` | 画像を縮小して置き換えるための PUT 先。`{ "uploads": [{ "kind": "front" / "back", "url", "method": "PUT", "headers" }] }`。**既存のキーに上書きする。** 編集できる人だけ。15 分有効 |
+| `POST /api/cards/{id}/images/optimized` | 縮小済みの印を付ける。`{ "imageOptimized": true, "imageOptimizedAt" }`。`version` は増えず、履歴にも残らない |
+
+縮小の決まり: 長辺 900px、JPEG 品質 0.4、サムネイルはそのまま。1 枚につき 1 回（表と裏を終えてから印を付ける）。元の 0.9 倍未満に減らないときは上書きせず印だけ付ける。失敗したら黙って次に詳細画面を開いたときにやり直す。Cloudflare 版の `imageUrls` には `?v=` が付く（ブラウザのキャッシュ対策）。R2 は上書きで元の画像が即座に無くなる。S3 はバージョニングで上書き前の版が 30 日残る。
 | `GET /api/cards/{id}/minutes` | その人との議事録（見える範囲）。議事録の一覧と同じ形 |
 | `GET /api/departments` | `{ "items": [{ "id", "name", "order", "active" }] }`。Cloudflare 版は空 |
 | `GET /api/directory` | `{ "items": [{ "id", "displayName", "email", "departments": [...] }] }`。共有や同席者の選択用。無効の人は除く |

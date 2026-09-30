@@ -249,6 +249,31 @@ export function registerCardRoutes(app, { index }) {
     return c.json(await presentCard(item, { detail: true, duplicates }));
   });
 
+  // 画像の縮小。ブラウザが縮小して、既存のキーに上書きする（サーバーは画像を触らない）
+  app.post('/api/cards/:id/images/replace', async (c) => {
+    const user = me(c);
+    const item = await loadCard(user, c.req.param('id'));
+    if (!canEditCard(user, item)) throw forbidden('この名刺を編集する権限がありません');
+    if (item.status === 'processing') throw conflict('読み取り中です。終わってからもう一度お試しください');
+    const uploads = [];
+    for (const [kind, key] of [['front', item.imageFrontKey], ['back', item.imageBackKey]]) {
+      if (!key) continue;
+      const url = await s3.presignPut({ bucket: 'image', key, contentType: 'image/jpeg', expiresSec: 900 });
+      uploads.push({ kind, url, method: 'PUT', headers: { 'Content-Type': 'image/jpeg' } });
+    }
+    return c.json({ uploads });
+  });
+
+  // 縮小済みの印。項目の変更ではないので version も履歴も動かさない
+  app.post('/api/cards/:id/images/optimized', async (c) => {
+    const user = me(c);
+    const item = await loadCard(user, c.req.param('id'));
+    if (!canEditCard(user, item)) throw forbidden('この名刺を編集する権限がありません');
+    const at = nowIso();
+    await ddb.update(item.pk, item.sk, { set: { imageOptimized: true, imageOptimizedAt: at } });
+    return c.json({ imageOptimized: true, imageOptimizedAt: at });
+  });
+
   app.put('/api/cards/:id', async (c) => {
     const user = me(c);
     const item = await loadCard(user, c.req.param('id'));

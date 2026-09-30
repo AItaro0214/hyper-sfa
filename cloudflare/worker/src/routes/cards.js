@@ -253,6 +253,35 @@ export function cardRoutes(app) {
     });
   });
 
+  // ---- 画像の縮小（ブラウザが縮小して、同じキーに上書きする） ----
+  // 上書き先は既存の /api/uploads/<key> の署名付き URL。署名にキーが入っているので他の名刺には書けない
+  app.post('/api/cards/:id/images/replace', async (c) => {
+    const user = c.get('user');
+    const row = await loadCard(c.env, c.req.param('id'));
+    if (row.status === 'processing') throw conflict('読み取り中です。終わってからもう一度お試しください');
+    const uploads = [];
+    for (const [kind, key] of [['front', row.image_front_key], ['back', row.image_back_key]]) {
+      if (!key) continue;
+      uploads.push({
+        kind,
+        url: await signedPath(c.env, `/api/uploads/${key}`, UPLOAD_TTL_SEC, user.id),
+        method: 'PUT',
+        headers: { 'Content-Type': 'image/jpeg' },
+      });
+    }
+    return c.json({ uploads });
+  });
+
+  // 縮小済みの印。画像の中身の変更であって項目の変更ではないので、version も履歴も動かさない
+  app.post('/api/cards/:id/images/optimized', async (c) => {
+    const row = await loadCard(c.env, c.req.param('id'));
+    const at = nowIso();
+    await c.env.DB.prepare('UPDATE cards SET image_optimized = 1, image_optimized_at = ? WHERE id = ? AND deleted_at IS NULL')
+      .bind(at, row.id)
+      .run();
+    return c.json({ imageOptimized: true, imageOptimizedAt: at });
+  });
+
   // ---- 編集 ----
   app.put('/api/cards/:id', async (c) => {
     const user = c.get('user');

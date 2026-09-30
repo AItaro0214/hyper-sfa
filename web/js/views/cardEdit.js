@@ -2,6 +2,7 @@
 // どこから直しても同じ操作になるように、フォームの中身はここだけに持つ。
 import { isValidEmail } from '/core/index.js';
 import { api, ApiError } from '../api.js';
+import { optimizeCardImages } from '../imageUtil.js';
 import { state } from '../state.js';
 import { esc, el, openModal, toast } from '../ui.js';
 
@@ -153,6 +154,8 @@ export async function mountCardForm(container, opts) {
       const res = await api.put(`/api/cards/${encodeURIComponent(card.id)}`, body);
       const saved = res && res.id ? res : res && res.card ? res.card : await api.get(`/api/cards/${encodeURIComponent(card.id)}`);
       toast('保存しました', 'success');
+      // 確認済みになったら、画像を裏で縮小する。待たない・失敗しても画面は変えない
+      if (saved.status === 'confirmed' && !saved.imageOptimized) optimizeCardImages(saved);
       if (onSaved) onSaved(saved);
     } catch (ex) {
       btns.forEach((b) => { b.disabled = false; });

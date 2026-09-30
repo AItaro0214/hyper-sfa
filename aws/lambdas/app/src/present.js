@@ -31,6 +31,7 @@ export async function presentCard(item, { detail = false, duplicates } = {}) {
     deptIds,
     departments: deptIds.filter((id) => depts.has(id)).map((id) => ({ id, name: depts.get(id).name })),
     imageUrls: await imageUrls(item),
+    imageOptimized: item.imageOptimized === true,
     createdBy: { id: item.createdBy ?? null, name: item.createdByName ?? '' },
     createdAt: item.createdAt ?? null,
     updatedBy: item.updatedBy ? { id: item.updatedBy, name: item.updatedByName ?? '' } : null,

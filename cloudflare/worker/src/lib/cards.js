@@ -57,7 +57,9 @@ export function failureFor(kind) {
 }
 
 export function imageUrls(row) {
-  const u = (kind, key) => (key ? `/api/cards/${row.id}/images/${kind}` : null);
+  // 画像は max-age=300 でブラウザに残るので、縮小で置き換えた直後に古い画像が出ないよう版を付ける
+  const v = encodeURIComponent(row.image_optimized_at || row.updated_at || '');
+  const u = (kind, key) => (key ? `/api/cards/${row.id}/images/${kind}${v ? `?v=${v}` : ''}` : null);
   return { thumb: u('thumb', row.thumb_key), front: u('front', row.image_front_key), back: u('back', row.image_back_key) };
 }
 
@@ -79,6 +81,7 @@ export function rowToCard(row, { detail = false } = {}) {
     deptIds: [],
     departments: [],
     imageUrls: imageUrls(row),
+    imageOptimized: !!row.image_optimized,
     createdBy: who(row.created_by, row.created_by_name),
     createdAt: row.created_at,
     updatedBy: who(row.updated_by, row.updated_by_name),

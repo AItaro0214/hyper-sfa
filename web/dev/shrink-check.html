@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>画像の縮小の確認</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; max-width: 900px; }
+  label { display: block; margin: 8px 0; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .col { flex: 1 1 320px; min-width: 0; }
+  img { max-width: 100%; border: 1px solid #ccc; }
+  table { border-collapse: collapse; margin: 12px 0; }
+  td, th { border: 1px solid #ccc; padding: 4px 10px; text-align: left; }
+</style>
+</head>
+<body>
+<h1>画像の縮小の確認</h1>
+<p>名刺の写真を選ぶと、保管用の縮小（長辺と JPEG 品質）をかけた結果を出します。土台（api.js など）には依存しません。</p>
+<label>写真 <input type="file" accept="image/*" id="file"></label>
+<label>長辺 <input type="number" id="edge" value="900" min="100" max="4000" step="50"> px</label>
+<label>品質 <input type="number" id="q" value="0.4" min="0.1" max="1" step="0.05"></label>
+<p id="msg"></p>
+<table id="tbl" hidden>
+  <tr><th></th><th>大きさ</th><th>容量</th></tr>
+  <tr><td>縮小前</td><td id="w0"></td><td id="s0"></td></tr>
+  <tr><td>縮小後</td><td id="w1"></td><td id="s1"></td></tr>
+  <tr><td>結果</td><td colspan="2" id="verdict"></td></tr>
+</table>
+<div class="row">
+  <div class="col"><h2>縮小前</h2><img id="before" alt="縮小前" hidden></div>
+  <div class="col"><h2>縮小後</h2><img id="after" alt="縮小後" hidden></div>
+</div>
+<script type="module">
+// web/js/imageUtil.js の resizeToJpeg / shrinkForStorage と同じ処理（ここだけで完結させるため写している）
+async function loadBitmap(file) {
+  if (window.createImageBitmap) {
+    try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch { /* <img> で読み直す */ }
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('画像を読み込めませんでした'));
+      img.src = url;
+    });
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 10000); }
+}
+async function shrink(blob, maxEdge, quality) {
+  const bmp = await loadBitmap(blob);
+  const scale = Math.min(1, maxEdge / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bmp.width * scale));
+  canvas.height = Math.max(1, Math.round(bmp.height * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  const srcSize = `${bmp.width} x ${bmp.height}`;
+  if (bmp.close) bmp.close();
+  const out = await new Promise((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error('変換できませんでした'))), 'image/jpeg', quality));
+  return { blob: out, srcSize, outSize: `${canvas.width} x ${canvas.height}` };
+}
+const kb = (n) => `${(n / 1024).toFixed(1)} KB`;
+const $ = (id) => document.getElementById(id);
+let current = null;
+async function run() {
+  if (!current) return;
+  $('msg').textContent = '縮小しています…';
+  try {
+    const r = await shrink(current, Number($('edge').value), Number($('q').value));
+    $('before').src = URL.createObjectURL(current); $('before').hidden = false;
+    $('after').src = URL.createObjectURL(r.blob); $('after').hidden = false;
+    $('w0').textContent = r.srcSize; $('s0').textContent = kb(current.size);
+    $('w1').textContent = r.outSize; $('s1').textContent = kb(r.blob.size);
+    // 本番と同じ判定: 1 割も減らなければ上書きしない
+    $('verdict').textContent = r.blob.size < current.size * 0.9 ? `上書きする（${Math.round((1 - r.blob.size / current.size) * 100)}% 減）` : '上書きしない（元が既に小さい）';
+    $('tbl').hidden = false;
+    $('msg').textContent = '';
+  } catch (e) { $('msg').textContent = e.message; }
+}
+$('file').addEventListener('change', (e) => { current = e.target.files[0] || null; run(); });
+$('edge').addEventListener('change', run);
+$('q').addEventListener('change', run);
+</script>
+</body>
+</html>

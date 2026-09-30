@@ -139,4 +139,4 @@ truncate(s, max)
 
 ## テスト
 
-`packages/core/test/*.test.js`、`node --test`。特に `extractJson` は崩れた応答の見本（`test/fixtures/gemini-*.txt`）を 10 種類以上そろえる。
+`packages/core/test/*.test.js`、`node --test`（引数なし。Node 24 では `node --test test/` が使えない）。特に `extractJson` は崩れた応答の見本（`test/fixtures/gemini-*.txt`）を 10 種類以上そろえる。

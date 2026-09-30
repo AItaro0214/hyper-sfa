@@ -1,0 +1,1 @@
+{"result": {"company": "株式会社アシスト", "name": "山田 太郎", "email": "taro@example.co.jp; hanako@example.co.jp", "tel": "03-1234-5678", "fax": "03-0000-0000"}}

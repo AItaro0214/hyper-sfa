@@ -1,0 +1,23 @@
+# 構文チェックと単体テストだけ。デプロイのジョブはまだ無い（設計書どおり、デプロイは後の段階）。
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      # Cloudflare 版は wrangler の dry-run で束ねられることだけ確かめる（配備はしない）
+      - run: node scripts/prepare-assets.mjs && npx wrangler deploy --dry-run --outdir dist
+        working-directory: cloudflare
+        continue-on-error: true

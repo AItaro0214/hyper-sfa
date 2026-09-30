@@ -1,0 +1,6 @@
+{
+  "company": "株式会社アシスト", // 会社名
+  "name": "山田 太郎", /* 氏名 */
+  "note": "https://example.co.jp // 公式サイト",
+  "emails": ["taro@example.co.jp"]
+}

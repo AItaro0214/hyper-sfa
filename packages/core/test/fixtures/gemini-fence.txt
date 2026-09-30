@@ -1,0 +1,3 @@
+```json
+{"company": "株式会社アシスト", "name": "山田 太郎", "emails": ["taro@example.co.jp"]}
+```

@@ -1,0 +1,2 @@
+{"company": "株式会社アシスト", "name": "山田 太郎", "note": "住所: 東京都千代田区
+1-2-3", "emails": ["taro@example.co.jp"]}

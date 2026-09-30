@@ -199,7 +199,7 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 | --- | --- |
 | `POST /api/minutes` | `{ "mode", "title"?, "segmentSec"? }` → `{ "id", "segmentSec": 600, "audioMime": "audio/webm" }`。`segmentSec` はサーバーが選択中のモデルに合わせて返す |
 | `POST /api/minutes/{id}/segments` | `{ "seq": 1, "mime": "audio/webm", "startSec": 0, "durationSec": 600, "size": 2400000 }` → `{ "key", "url", "method": "PUT", "headers" }`。画面は `url` へ PUT し、続けて `PUT /api/minutes/{id}/segments/{seq}/done` を呼ぶ |
-| `POST /api/minutes/{id}/full-audio` | Cloudflare 版だけ。通しの 1 本のアップロード先。応答は segments と同じ |
+| `POST /api/minutes/{id}/full-audio` | Cloudflare 版だけ。通しの 1 本のアップロード先。本文 `{ "mime", "durationSec", "size" }`。応答は segments と同じ。画面は `/finish` の後に送る |
 | `POST /api/minutes/{id}/finish` | `{ "durationSec", "segments": 12 }`。`recording` → `uploaded` |
 | `PUT /api/minutes/{id}` | `{ title, memo, counterparts: [{ cardId?, company?, name?, department? }], attendeeIds }`。作った人だけ |
 | `POST /api/minutes/{id}/generate` | 作成を始める。失敗した所からのやり直しも同じ。202 |
@@ -210,7 +210,7 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 | `GET /api/minutes/{id}/transcript` | `{ "text", "version" }` |
 | `GET /api/minutes/{id}/summary` | `{ "markdown", "version" }` |
 | `GET /api/minutes/{id}/audio-url` | `{ "url", "expiresAt", "filename": "2026-10-02_株式会社アシスト定例.m4a" }`。7 日を過ぎたら 404 `{ code: "not_found", message: "音声は削除されました" }` |
-| `GET /api/minutes/{id}/shares` `POST` `DELETE /{userId}` | `POST` は `{ "userIds": [...] }` |
+| `GET /api/minutes/{id}/shares` `POST` `DELETE /{userId}` | `GET` は `{ "items": [{ "id", "name", "sharedAt" }] }`。`POST` は `{ "userIds": [...] }` |
 | `DELETE /api/minutes/{id}` | 削除 |
 
 `audio-url` の `url` は `<audio src>` と `<a download>` の両方に使える。

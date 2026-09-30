@@ -1,0 +1,20 @@
+{
+  "name": "hyper-sfa",
+  "private": true,
+  "version": "0.1.0",
+  "description": "名刺管理 + 議事録。AWS 版（100 名向け）と Cloudflare 版（1〜5 名向け）",
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "aws/lambdas/*",
+    "cloudflare"
+  ],
+  "scripts": {
+    "check": "node scripts/check-syntax.mjs",
+    "test": "npm run test --workspaces --if-present",
+    "test:core": "npm test -w packages/core"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

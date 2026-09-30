@@ -1,0 +1,63 @@
+# Cloudflare Workers 設定（docs/cloudflare-small-design.md）。Worker 1 本で API と画面の配信をまかなう。
+# 無料枠: Workers 10万req/日・CPU 10ms/実行、D1 書き込み10万行/日、R2 10GB、Workflows 3,000 ステップ/日。
+# KV は使わない（無料枠の書き込みが 1,000回/日しかない）。永続化は D1 と R2。
+name = "hyper-sfa"
+main = "worker/src/index.js"
+compatibility_date = "2026-09-01"
+
+# 画面は web/ と packages/core/src を scripts/prepare-assets.mjs で .assets/ にまとめて配る
+# （[assets] は 1 ディレクトリしか指せないため。画面は /core/index.js で共通ロジックを読む）。
+# run_worker_first: /api/* の GET（画像、CSV のダウンロード）は「ページ移動」として届くことがある。
+# 何も指定しないと SPA の index.html が返ってしまうので、/api/* は必ず Worker に渡す。
+[assets]
+directory = "./.assets"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[vars]
+APP_NAME = "hyper-sfa"
+# 録音の区切りの長さ（秒）。選択中のモデルの上限に合わせてサーバーが下げることがある
+SEGMENT_SEC = 600
+RECORDING_MAX_SEC = 7200
+# 1 人あたりの名刺の読み取り（再生成を含む）の 1 日の上限
+SCAN_PER_DAY = 200
+# PBKDF2 の繰り返し回数。CPU 10ms に収まる回数。実機で測って決める（設計書 §3.2, §12）
+PBKDF2_ITERATIONS = 30000
+SESSION_DAYS = 30
+SESSION_ABSOLUTE_DAYS = 90
+# Secret（wrangler secret put / .dev.vars）: AUTH_PEPPER, KEY_ENCRYPTION_KEY
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hyper-sfa"
+# `npx wrangler d1 create hyper-sfa` の出力を貼る
+database_id = "PLACEHOLDER_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "hyper-sfa-images"
+
+[[r2_buckets]]
+binding = "AUDIO"
+bucket_name = "hyper-sfa-audio"
+
+[[r2_buckets]]
+binding = "DATA"
+bucket_name = "hyper-sfa-data"
+
+# 名刺の読み取り（Files API へ送る → 生成 → 保存 → 後始末）
+[[workflows]]
+name = "card-scan"
+binding = "CARD_SCAN_WORKFLOW"
+class_name = "CardScanWorkflow"
+
+# 議事録の作成（worker/src/workflows/minutes.js）
+[[workflows]]
+name = "minutes"
+binding = "MINUTES_WORKFLOW"
+class_name = "MinutesWorkflow"
+
+[observability]
+enabled = true

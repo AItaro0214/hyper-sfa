@@ -1,0 +1,20 @@
+{
+  "name": "@hyper-sfa/cloudflare",
+  "private": true,
+  "version": "0.1.0",
+  "description": "hyper-sfa Cloudflare 版（Worker 1 本 + D1 + R2 + Workflows）",
+  "type": "module",
+  "scripts": {
+    "prepare-assets": "node scripts/prepare-assets.mjs",
+    "dev": "node scripts/prepare-assets.mjs && wrangler dev",
+    "deploy": "node scripts/prepare-assets.mjs && wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply hyper-sfa --local",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "hono": "^4.9.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}

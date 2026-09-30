@@ -1,0 +1,607 @@
+// 文字起こし → 結合 → 議事録 の本体（Workflows の step.do に載せる処理）。
+// workflows/minutes.js のクラスから呼ぶ。core と settings は deps で受け取る。
+// なぜ deps にするか: `cloudflare:workers` や @hyper-sfa/core に依存しないので、node --test で
+// step.do を即時実行する偽物と fetch/D1/R2 の偽物だけで流れを確かめられる。
+//
+// 決まり:
+// - 音声の中身は Worker で読まない。R2 の body を Gemini の Files API へそのまま流す。
+// - API キーはステップの返り値に入れない（Workflows は返り値を保存するため）。使うステップの中で読む。
+// - ステップの失敗は minutes.status = 'failed' と failure に書き、run は正常終了させる。
+//   画面の「もう一度試す」が generate を呼べば、done の区切りを飛ばして続きから動く。
+// - 区切りは順に実行する（2 時間 = 12 区切り × 数十秒）。並行にするなら子 Workflow に分ける。
+
+const RETRY = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '5 minutes' };
+const SMALL = { retries: { limit: 1, delay: '2 seconds' }, timeout: '1 minute' };
+const POLL_MAX = 15;
+// 何度やっても同じ結果になる失敗。ステップの再試行をさせない
+const NON_RETRYABLE = new Set(['blocked', 'not_configured', 'audio_missing']);
+// Gemini は音声を 1 秒 32 トークンで数える。inputTokens には音声分が含まれるので、費用の二重計上を避けるために引く
+const GEMINI_AUDIO_TOKENS_PER_SEC = 32;
+
+export class StepError extends Error {
+  constructor(kind, message, retryable = true) {
+    // step.do が再試行を使い切って投げ直すと、独自のプロパティは失われる。message から戻せるよう kind を埋める
+    super(`[${kind}] ${message}`);
+    this.kind = kind;
+    this.userMessage = message;
+    this.retryable = retryable && !NON_RETRYABLE.has(kind);
+  }
+}
+
+/** 例外を { kind, message, retryable } にする。音声や本文は message に入れない */
+function toFailure(e) {
+  if (e instanceof StepError) return { kind: e.kind, message: e.userMessage, retryable: e.retryable };
+  if (e instanceof TypeError) return { kind: 'provider', message: '通信に失敗しました', retryable: true };
+  return { kind: 'internal', message: '内部エラーが起きました', retryable: true };
+}
+function fromThrown(e) {
+  const m = /^\[(\w+)\] ([\s\S]*)$/.exec(String(e?.message ?? ''));
+  if (m) return { kind: m[1], message: m[2], retryable: !NON_RETRYABLE.has(m[1]) };
+  return { kind: 'internal', message: '内部エラーが起きました', retryable: true };
+}
+
+const nowIso = () => new Date().toISOString();
+const baseMime = (m) => String(m || 'audio/webm').split(';')[0].trim();
+const jst = (iso) => new Date(new Date(iso).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ');
+const num = (u, ...keys) => {
+  for (const k of keys) if (u?.[k] != null) return Number(u[k]) || 0;
+  return 0;
+};
+
+export function buildVars(minute, counterparts, attendees) {
+  return {
+    TITLE: minute.title || '',
+    DATE: minute.held_at ? jst(minute.held_at) : '',
+    COUNTERPARTS: counterparts.map((c) => [c.company, c.department, c.name].filter(Boolean).join(' ')).join('、'),
+    ATTENDEES: attendees.join('、'),
+    MEMO: minute.memo || '',
+  };
+}
+
+async function readJson(res) {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+function geminiError(deps, status, json) {
+  const c = deps.classifyGeminiError({ status, json });
+  // c.message は提供元の文言なので、利用者に見せる文は種類から作る
+  return new StepError(c.kind, providerMessage(c.kind), c.retryable);
+}
+function openaiError(deps, status, json) {
+  const c = deps.classifyOpenAIError({ status, json });
+  return new StepError(c.kind, providerMessage(c.kind), c.retryable);
+}
+function providerMessage(kind) {
+  switch (kind) {
+    case 'not_configured':
+      return '設定に問題があります。開発者に連絡してください';
+    case 'blocked':
+      return 'AI が内容を処理できませんでした';
+    case 'rate_limited':
+      return 'AI サービスが混み合っています';
+    default:
+      return 'AI サービスでエラーが起きました';
+  }
+}
+
+/**
+ * Gemini の Files API に R2 の音声をストリームで預ける（Worker は中身を読まない）。
+ * 戻り値は { name, uri, mimeType, state }。
+ */
+export async function uploadToGemini({ env, deps, apiKey, key, mimeType, displayName }) {
+  const f = deps.fetch ?? fetch;
+  const obj = await env.AUDIO.get(key);
+  if (!obj) throw new StepError('audio_missing', '音声が見つかりません（削除された可能性があります）', false);
+  const sizeBytes = obj.size;
+  const startReq = deps.buildFilesUploadRequest({ apiKey, mimeType, displayName, sizeBytes });
+  const startRes = await f(startReq.url, { method: startReq.method, headers: startReq.headers, body: startReq.body });
+  if (!startRes.ok) throw geminiError(deps, startRes.status, await readJson(startRes));
+  const uploadUrl = startRes.headers.get('x-goog-upload-url');
+  if (!uploadUrl) throw new StepError('provider', 'ファイルの預け先が取得できませんでした');
+  // 長さ不明のストリームは fetch に渡せないので FixedLengthStream で長さを明示し、R2 の body をそのまま流す
+  let body = obj.body;
+  if (typeof FixedLengthStream !== 'undefined') {
+    const fls = new FixedLengthStream(sizeBytes);
+    obj.body.pipeTo(fls.writable).catch(() => {});
+    body = fls.readable;
+  }
+  const upRes = await f(uploadUrl, { method: 'POST', headers: deps.buildFilesUploadBodyHeaders({ sizeBytes }), body });
+  if (!upRes.ok) throw geminiError(deps, upRes.status, await readJson(upRes));
+  const json = await readJson(upRes);
+  const file = json?.file ?? json ?? {};
+  return { name: file.name, uri: file.uri, mimeType: file.mimeType || mimeType, state: file.state || 'PROCESSING' };
+}
+
+export async function getGeminiFileState({ deps, apiKey, name }) {
+  const f = deps.fetch ?? fetch;
+  const req = deps.buildFileGetRequest({ apiKey, name });
+  const res = await f(req.url, { method: req.method, headers: req.headers });
+  if (!res.ok) throw geminiError(deps, res.status, await readJson(res));
+  return await readJson(res);
+}
+
+export async function deleteGeminiFile({ deps, apiKey, name }) {
+  const f = deps.fetch ?? fetch;
+  const req = deps.buildFileDeleteRequest({ apiKey, name });
+  await f(req.url, { method: req.method, headers: req.headers });
+}
+
+/** generateContent を呼んで { text, usage } を返す。失敗は StepError */
+export async function callGemini({ deps, apiKey, model, prompt, parts, maxOutputTokens }) {
+  const f = deps.fetch ?? fetch;
+  const req = deps.buildGenerateRequest({
+    model: model.id,
+    apiKey,
+    prompt,
+    parts,
+    thinkingLevel: model.thinkingLevel,
+    maxOutputTokens,
+  });
+  const res = await f(req.url, { method: req.method, headers: req.headers, body: req.body });
+  const json = await readJson(res);
+  if (!res.ok) throw geminiError(deps, res.status, json);
+  const r = deps.parseGenerateResponse(json);
+  if (r.blocked) throw new StepError('blocked', providerMessage('blocked'), false);
+  // 上限で打ち切られた応答は途中で切れた文字起こしになる。失敗にして再試行する
+  if (r.finishReason === 'MAX_TOKENS') throw new StepError('truncated', '出力が途中で切れました');
+  if (!r.text || !r.text.trim()) throw new StepError('empty', '結果が空でした');
+  return {
+    text: r.text,
+    usage: { inputTokens: num(r.usage, 'inputTokens'), outputTokens: num(r.usage, 'outputTokens') + num(r.usage, 'thoughtTokens') },
+  };
+}
+
+export async function callOpenAIChat({ deps, apiKey, model, prompt, maxOutputTokens }) {
+  const f = deps.fetch ?? fetch;
+  const req = deps.buildChatRequest({ model: model.id, apiKey, system: '', user: prompt, maxOutputTokens, reasoningEffort: model.thinkingLevel });
+  const res = await f(req.url, { method: req.method, headers: req.headers, body: req.body });
+  const json = await readJson(res);
+  if (!res.ok) throw openaiError(deps, res.status, json);
+  const r = deps.parseChatResponse(json);
+  if (r.finishReason === 'length') throw new StepError('truncated', '出力が途中で切れました');
+  if (!r.text || !r.text.trim()) throw new StepError('empty', '結果が空でした');
+  return { text: r.text, usage: { inputTokens: num(r.usage, 'inputTokens'), outputTokens: num(r.usage, 'outputTokens') } };
+}
+
+/**
+ * OpenAI の文字起こし。multipart に Blob が要るので、ここだけ音声を Worker のメモリに読む。
+ * 区切りは 2.4MB ほどで、blob() は CPU をほとんど使わない（コピーだけ）ので許容する。
+ */
+export async function callOpenAITranscribe({ env, deps, apiKey, model, key, mimeType, prompt }) {
+  const f = deps.fetch ?? fetch;
+  const obj = await env.AUDIO.get(key);
+  if (!obj) throw new StepError('audio_missing', '音声が見つかりません（削除された可能性があります）', false);
+  const blob = await obj.blob();
+  const req = deps.buildTranscriptionRequest({ model: model.id, apiKey, audio: blob, mimeType, prompt, language: 'ja' });
+  const res = await f(req.url, { method: req.method, headers: req.headers, body: req.body });
+  const json = await readJson(res);
+  if (!res.ok) throw openaiError(deps, res.status, json);
+  const r = deps.parseTranscriptionResponse(json);
+  if (!r.text || !r.text.trim()) throw new StepError('empty', '結果が空でした');
+  return { text: r.text, usage: { inputTokens: num(r.usage, 'inputTokens'), outputTokens: num(r.usage, 'outputTokens') } };
+}
+
+/** 利用量の記録。失敗しても処理は止めない */
+async function recordUse(env, deps, o) {
+  try {
+    const inputTokens = o.usage?.inputTokens ?? 0;
+    const outputTokens = o.usage?.outputTokens ?? 0;
+    const audioSeconds = o.audioSeconds ?? 0;
+    let cost = 0;
+    if (o.ok || inputTokens || outputTokens) {
+      const nonAudioIn =
+        o.model.provider === 'gemini' && audioSeconds > 0
+          ? Math.max(0, inputTokens - audioSeconds * GEMINI_AUDIO_TOKENS_PER_SEC)
+          : inputTokens;
+      cost = deps.estimateCost({ model: o.model, inputTokens: nonAudioIn, outputTokens, audioSeconds, date: new Date() });
+    }
+    const ev = deps.usageEvent({
+      kind: o.kind,
+      userId: o.userId,
+      modelId: o.model.id,
+      inputTokens,
+      outputTokens,
+      audioSeconds,
+      ok: o.ok,
+      failureKind: o.failureKind ?? null,
+      retry: Boolean(o.retry),
+      cost,
+    });
+    await deps.recordUsage(env, { ...ev, cost });
+  } catch {
+    // 無視
+  }
+}
+
+export async function markFailed(env, minuteId, failStep, failure) {
+  await env.DB.prepare("UPDATE minutes SET status = 'failed', step = NULL, failure = ?, updated_at = ? WHERE id = ?")
+    .bind(JSON.stringify({ step: failStep, ...failure }), nowIso(), minuteId)
+    .run();
+}
+
+/**
+ * Workflow の本体。event.payload = { minuteId, target } か、{ test: true, ... }。
+ * step は Workflows の step（do / sleep）。
+ */
+export async function runMinutesPipeline({ env, deps, event, step }) {
+  const payload = event.payload ?? {};
+  if (payload.test) return await runTest({ env, deps, payload, step });
+  const { minuteId } = payload;
+  const target = payload.target ?? 'generate';
+  let counter = 0;
+
+  /** step.do を包む。再試行しても無駄な失敗は ok:false で返し、再試行を使い切った失敗も ok:false にする */
+  const guarded = async (name, config, fn) => {
+    try {
+      return await step.do(name, config, async () => {
+        try {
+          return { ok: true, value: await fn() };
+        } catch (e) {
+          const f = toFailure(e);
+          if (!f.retryable) return { ok: false, failure: f };
+          throw new Error(`[${f.kind}] ${f.message}`);
+        }
+      });
+    } catch (e) {
+      return { ok: false, failure: fromThrown(e) };
+    }
+  };
+  const fail = async (failStep, failure) => {
+    await step.do(`fail-${failStep}-${++counter}`, SMALL, async () => {
+      await markFailed(env, minuteId, failStep, failure);
+      return true;
+    });
+  };
+
+  try {
+    // ---- load: 設定・モデル・プロンプト・区切りの一覧。API キーはここでは返さない ----
+    const loaded = await step.do('load', SMALL, async () => {
+      const m = await env.DB.prepare('SELECT * FROM minutes WHERE id = ? AND deleted_at IS NULL').bind(minuteId).first();
+      if (!m) return { missing: true };
+      const segs = (
+        await env.DB.prepare(
+          'SELECT seq, key, mime, start_sec, duration_sec, size, transcript_key, transcript_status FROM minute_segments WHERE minute_id = ? AND uploaded = 1 ORDER BY seq',
+        )
+          .bind(minuteId)
+          .all()
+      ).results;
+      const cps = (
+        await env.DB.prepare('SELECT company, department, name FROM minute_counterparts WHERE minute_id = ? ORDER BY seq')
+          .bind(minuteId)
+          .all()
+      ).results;
+      const ats = (
+        await env.DB.prepare('SELECT u.display_name FROM minute_attendees a JOIN users u ON u.id = a.user_id WHERE a.minute_id = ?')
+          .bind(minuteId)
+          .all()
+      ).results.map((r) => r.display_name);
+      const tModel = await deps.getModel(env, await deps.getSelectedModel(env, 'transcribe'));
+      const sModel = await deps.getModel(env, await deps.getSelectedModel(env, 'summarize'));
+      const configErr = async (model, label) => {
+        if (!model) return `${label}のモデルが設定されていません`;
+        const k = await deps.getApiKey(env, model.provider);
+        return k ? null : `${model.provider} の API キーが登録されていません`;
+      };
+      const err = (target !== 'summary' ? await configErr(tModel, '文字起こし') : null) ?? (await configErr(sModel, '議事録'));
+      const tPrompt = await deps.getPrompt(env, 'transcribe');
+      const sPrompt = await deps.getPrompt(env, 'summarize');
+      return {
+        missing: false,
+        configError: err,
+        owner: m.owner_id,
+        tVersion: (m.transcript_version ?? 0) + 1,
+        sVersion: (m.summary_version ?? 0) + 1,
+        // すでに版があれば、これは「やり直し」として数える
+        transcribeIsRetry: (m.transcript_version ?? 0) > 0,
+        summarizeIsRetry: (m.summary_version ?? 0) > 0,
+        segments: segs,
+        vars: buildVars(m, cps, ats),
+        tModel,
+        sModel,
+        tPrompt: tPrompt.text,
+        sPrompt: sPrompt.text,
+      };
+    });
+    if (loaded.missing) return { ok: false, reason: 'missing' };
+    if (loaded.configError) {
+      await fail(target === 'summary' ? 'summarize' : 'transcribe', {
+        kind: 'not_configured',
+        message: `設定に問題があります。開発者に連絡してください（${loaded.configError}）`,
+        retryable: false,
+      });
+      return { ok: false, reason: 'config' };
+    }
+
+    const total = loaded.segments.length;
+
+    // ---- 文字起こし（区切りごと。done は飛ばす） ----
+    if (target !== 'summary') {
+      if (total === 0) {
+        await fail('transcribe', { kind: 'empty', message: '音声がありません', retryable: false });
+        return { ok: false, reason: 'no_segments' };
+      }
+      const model = loaded.tModel;
+      const transcribePrompt = deps.renderPrompt(loaded.tPrompt, loaded.vars);
+      let done = loaded.segments.filter((s) => s.transcript_status === 'done').length;
+      await step.do('status-transcribing', SMALL, async () => {
+        await env.DB.prepare(
+          "UPDATE minutes SET status = 'transcribing', step = 'transcribe', failure = NULL, progress = ?, updated_at = ? WHERE id = ?",
+        )
+          .bind(JSON.stringify({ segmentsDone: done, segmentsTotal: total }), nowIso(), minuteId)
+          .run();
+        return true;
+      });
+
+      for (const seg of loaded.segments) {
+        if (seg.transcript_status === 'done') continue;
+        const mimeType = baseMime(seg.mime);
+        let file = null;
+
+        if (model.provider === 'gemini') {
+          const up = await guarded(`upload-${seg.seq}`, RETRY, async () => {
+            const apiKey = await deps.getApiKey(env, 'gemini');
+            return await uploadToGemini({ env, deps, apiKey, key: seg.key, mimeType, displayName: `${minuteId}-${seg.seq}` });
+          });
+          if (!up.ok) {
+            await recordUse(env, deps, { kind: 'transcribe', userId: loaded.owner, model, ok: false, failureKind: up.failure.kind, retry: loaded.transcribeIsRetry });
+            await fail('transcribe', up.failure);
+            return { ok: false, reason: 'upload' };
+          }
+          file = up.value;
+          // 預けた直後は PROCESSING のことがある。ACTIVE になるまで、寝てから確かめる
+          for (let i = 0; file.state !== 'ACTIVE' && file.state !== 'FAILED' && i < POLL_MAX; i++) {
+            await step.sleep(`wait-${seg.seq}-${i}`, '3 seconds');
+            const cur = file;
+            const st = await guarded(`check-${seg.seq}-${i}`, SMALL, async () => {
+              const apiKey = await deps.getApiKey(env, 'gemini');
+              const j = await getGeminiFileState({ deps, apiKey, name: cur.name });
+              return { ...cur, state: j?.state ?? cur.state };
+            });
+            if (!st.ok) {
+              await fail('transcribe', st.failure);
+              return { ok: false, reason: 'check' };
+            }
+            file = st.value;
+          }
+          if (file.state !== 'ACTIVE') {
+            await fail('transcribe', { kind: 'provider', message: '音声の準備が終わりませんでした', retryable: true });
+            return { ok: false, reason: 'not_active' };
+          }
+        }
+
+        const tr = await guarded(`transcribe-${seg.seq}`, RETRY, async () => {
+          const apiKey = await deps.getApiKey(env, model.provider);
+          let r;
+          try {
+            if (model.provider === 'gemini') {
+              r = await callGemini({
+                deps,
+                apiKey,
+                model,
+                prompt: transcribePrompt,
+                parts: [{ fileData: { fileUri: file.uri, mimeType: file.mimeType || mimeType } }],
+                maxOutputTokens: 16384,
+              });
+            } else {
+              // OpenAI のプロンプトは短い手がかりだけ（長いと受け付けないモデルがある）
+              const hint = `会議: ${loaded.vars.TITLE}。相手: ${loaded.vars.COUNTERPARTS}。同席: ${loaded.vars.ATTENDEES}`.slice(0, 400);
+              r = await callOpenAITranscribe({ env, deps, apiKey, model, key: seg.key, mimeType, prompt: hint });
+            }
+          } catch (e) {
+            await recordUse(env, deps, { kind: 'transcribe', userId: loaded.owner, model, ok: false, failureKind: toFailure(e).kind, retry: loaded.transcribeIsRetry });
+            throw e;
+          }
+          const outKey = `minutes/${minuteId}/seg-${seg.seq}-v${loaded.tVersion}.txt`;
+          await env.DATA.put(outKey, r.text);
+          // 再試行で二重に数えないよう、done は D1 の値から数え直す
+          await env.DB.prepare("UPDATE minute_segments SET transcript_key = ?, transcript_status = 'done' WHERE minute_id = ? AND seq = ?")
+            .bind(outKey, minuteId, seg.seq)
+            .run();
+          const cnt = await env.DB.prepare(
+            "SELECT COUNT(*) AS n FROM minute_segments WHERE minute_id = ? AND uploaded = 1 AND transcript_status = 'done'",
+          )
+            .bind(minuteId)
+            .first();
+          done = cnt?.n ?? done + 1;
+          await env.DB.prepare('UPDATE minutes SET progress = ?, updated_at = ? WHERE id = ?')
+            .bind(JSON.stringify({ segmentsDone: done, segmentsTotal: total }), nowIso(), minuteId)
+            .run();
+          await recordUse(env, deps, { kind: 'transcribe', userId: loaded.owner, model, ok: true, usage: r.usage, audioSeconds: seg.duration_sec, retry: loaded.transcribeIsRetry });
+          return { key: outKey };
+        });
+        if (file?.name) {
+          // 預けたファイルは使い終わったら消す（48 時間で自動でも消える）。失敗しても続ける
+          const name = file.name;
+          await step.do(`cleanup-${seg.seq}`, SMALL, async () => {
+            try {
+              await deleteGeminiFile({ deps, apiKey: await deps.getApiKey(env, 'gemini'), name });
+            } catch {
+              // 無視
+            }
+            return true;
+          });
+        }
+        if (!tr.ok) {
+          await fail('transcribe', tr.failure);
+          return { ok: false, reason: 'transcribe' };
+        }
+      }
+
+      // ---- join ----
+      const joined = await guarded('join', SMALL, async () => {
+        const rows = (
+          await env.DB.prepare(
+            "SELECT seq, start_sec, transcript_key FROM minute_segments WHERE minute_id = ? AND uploaded = 1 AND transcript_status = 'done' ORDER BY seq",
+          )
+            .bind(minuteId)
+            .all()
+        ).results;
+        const parts = [];
+        for (const r of rows) {
+          const o = await env.DATA.get(r.transcript_key);
+          parts.push({ startSec: r.start_sec, text: o ? await o.text() : '' });
+        }
+        // joinSegments が区切りの開始時刻を足して通しの時刻にそろえる（ここで先に offsetTimestamps すると二重に足される）
+        const text = deps.joinSegments(parts);
+        const newKey = `minutes/${minuteId}/transcript-v${loaded.tVersion}.txt`;
+        await env.DATA.put(newKey, text);
+        const cur = await env.DB.prepare('SELECT transcript_key, transcript_prev_key FROM minutes WHERE id = ?').bind(minuteId).first();
+        // 再試行されても prev を壊さないよう、すでに新しい版になっていれば触らない
+        if (cur.transcript_key !== newKey) {
+          await env.DB.prepare(
+            'UPDATE minutes SET transcript_prev_key = transcript_key, transcript_key = ?, transcript_version = ?, transcript_model = ?, transcript_at = ?, updated_at = ? WHERE id = ?',
+          )
+            .bind(newKey, loaded.tVersion, model.id, nowIso(), nowIso(), minuteId)
+            .run();
+          // 2 つ前の版は戻れないので消す
+          if (cur.transcript_prev_key && cur.transcript_prev_key !== newKey) await env.DATA.delete(cur.transcript_prev_key);
+        }
+        return { key: newKey };
+      });
+      if (!joined.ok) {
+        await fail('transcribe', joined.failure);
+        return { ok: false, reason: 'join' };
+      }
+    }
+
+    // ---- 議事録 ----
+    const sum = await guarded('summarize', RETRY, async () => {
+      const model = loaded.sModel;
+      const cur = await env.DB.prepare('SELECT transcript_key, summary_key, summary_prev_key FROM minutes WHERE id = ?').bind(minuteId).first();
+      if (!cur?.transcript_key) throw new StepError('empty', '文字起こしがありません', false);
+      await env.DB.prepare("UPDATE minutes SET status = 'summarizing', step = 'summarize', failure = NULL, updated_at = ? WHERE id = ?")
+        .bind(nowIso(), minuteId)
+        .run();
+      const o = await env.DATA.get(cur.transcript_key);
+      const transcript = o ? await o.text() : '';
+      const prompt = deps.renderPrompt(loaded.sPrompt, { ...loaded.vars, TRANSCRIPT: transcript });
+      const apiKey = await deps.getApiKey(env, model.provider);
+      let r;
+      try {
+        r =
+          model.provider === 'gemini'
+            ? await callGemini({ deps, apiKey, model, prompt, parts: [], maxOutputTokens: 16384 })
+            : await callOpenAIChat({ deps, apiKey, model, prompt, maxOutputTokens: 16384 });
+      } catch (e) {
+        await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: toFailure(e).kind, retry: loaded.summarizeIsRetry });
+        throw e;
+      }
+      const newKey = `minutes/${minuteId}/summary-v${loaded.sVersion}.md`;
+      await env.DATA.put(newKey, r.text);
+      if (cur.summary_key !== newKey) {
+        await env.DB.prepare(
+          'UPDATE minutes SET summary_prev_key = summary_key, summary_key = ?, summary_version = ?, summary_model = ?, summary_at = ?, updated_at = ? WHERE id = ?',
+        )
+          .bind(newKey, loaded.sVersion, model.id, nowIso(), nowIso(), minuteId)
+          .run();
+        if (cur.summary_prev_key && cur.summary_prev_key !== newKey) await env.DATA.delete(cur.summary_prev_key);
+      }
+      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: true, usage: r.usage, retry: loaded.summarizeIsRetry });
+      return { key: newKey };
+    });
+    if (!sum.ok) {
+      await fail('summarize', sum.failure);
+      return { ok: false, reason: 'summarize' };
+    }
+
+    await step.do('finish', SMALL, async () => {
+      await env.DB.prepare("UPDATE minutes SET status = 'done', step = NULL, failure = NULL, updated_at = ? WHERE id = ?")
+        .bind(nowIso(), minuteId)
+        .run();
+      return true;
+    });
+    return { ok: true };
+  } catch (e) {
+    // 想定外の例外でも Workflow を失敗で終わらせず、画面に「もう一度試す」を出す
+    try {
+      await markFailed(env, minuteId, target === 'summary' ? 'summarize' : 'transcribe', toFailure(e));
+    } catch {
+      // 無視
+    }
+    return { ok: false, reason: 'exception' };
+  }
+}
+
+/** 開発コンソールの「試し」。結果は settings の test:<jobId> に書く */
+async function runTest({ env, deps, payload, step }) {
+  const { jobId, kind, audioKey, transcript, promptText, modelId, userId } = payload;
+  const key = `test:${jobId}`;
+  const write = (obj) =>
+    env.DB.prepare('UPDATE settings SET value = ?, updated_at = ? WHERE key = ?').bind(JSON.stringify(obj), nowIso(), key).run();
+  const started = Date.now();
+  const model = await step.do('test-load', SMALL, async () => (await deps.getModel(env, modelId)) ?? null);
+  if (!model) {
+    await step.do('test-fail', SMALL, async () => {
+      await write({ status: 'error', userId, error: { kind: 'not_configured', message: 'モデルが見つかりません' } });
+      return true;
+    });
+    return { ok: false };
+  }
+  const emptyVars = { TITLE: '', DATE: '', COUNTERPARTS: '', ATTENDEES: '', MEMO: '' };
+  const needKey = async (provider) => {
+    const k = await deps.getApiKey(env, provider);
+    if (!k) throw new StepError('not_configured', 'API キーが登録されていません', false);
+    return k;
+  };
+  let result;
+  try {
+    if (kind === 'summarize') {
+      result = await step.do('test-summarize', RETRY, async () => {
+        const apiKey = await needKey(model.provider);
+        const prompt = deps.renderPrompt(promptText, { ...emptyVars, TRANSCRIPT: transcript ?? '' });
+        const out =
+          model.provider === 'gemini'
+            ? await callGemini({ deps, apiKey, model, prompt, parts: [], maxOutputTokens: 16384 })
+            : await callOpenAIChat({ deps, apiKey, model, prompt, maxOutputTokens: 16384 });
+        return { text: out.text, usage: out.usage, audioSeconds: 0 };
+      });
+    } else {
+      const prompt = deps.renderPrompt(promptText, emptyVars);
+      let file = null;
+      let mimeType = 'audio/webm';
+      if (model.provider === 'gemini') {
+        file = await step.do('test-upload', RETRY, async () => {
+          const apiKey = await needKey('gemini');
+          const head = await env.AUDIO.head(audioKey);
+          if (!head) throw new StepError('audio_missing', '音声が見つかりません', false);
+          const mime = baseMime(head.httpMetadata?.contentType);
+          const f = await uploadToGemini({ env, deps, apiKey, key: audioKey, mimeType: mime, displayName: `test-${jobId}` });
+          return f;
+        });
+        mimeType = file.mimeType || mimeType;
+        for (let i = 0; file.state !== 'ACTIVE' && file.state !== 'FAILED' && i < POLL_MAX; i++) {
+          await step.sleep(`test-wait-${i}`, '3 seconds');
+          const cur = file;
+          file = await step.do(`test-check-${i}`, SMALL, async () => {
+            const j = await getGeminiFileState({ deps, apiKey: await needKey('gemini'), name: cur.name });
+            return { ...cur, state: j?.state ?? cur.state };
+          });
+        }
+      }
+      result = await step.do('test-transcribe', RETRY, async () => {
+        const apiKey = await needKey(model.provider);
+        const out =
+          model.provider === 'gemini'
+            ? await callGemini({ deps, apiKey, model, prompt, parts: [{ fileData: { fileUri: file.uri, mimeType } }], maxOutputTokens: 16384 })
+            : await callOpenAITranscribe({ env, deps, apiKey, model, key: audioKey, mimeType, prompt: prompt.slice(0, 400) });
+        return { text: out.text, usage: out.usage, audioSeconds: 0 };
+      });
+    }
+  } catch (e) {
+    result = { error: fromThrown(e) };
+  }
+  await step.do('test-finish', SMALL, async () => {
+    if (result.error) {
+      await recordUse(env, deps, { kind: 'test', userId, model, ok: false, failureKind: result.error.kind });
+      await write({ status: 'error', userId, error: result.error });
+    } else {
+      await recordUse(env, deps, { kind: 'test', userId, model, ok: true, usage: result.usage, audioSeconds: result.audioSeconds });
+      await write({ status: 'done', userId, text: result.text, usage: result.usage, elapsedMs: Date.now() - started });
+    }
+    return true;
+  });
+  return { ok: !result.error };
+}

@@ -1,0 +1,4 @@
+# prepare-assets.mjs が作る配信用のコピー（web/ と packages/core/src）
+.assets/
+.wrangler/
+.dev.vars

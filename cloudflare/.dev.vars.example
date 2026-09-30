@@ -1,0 +1,8 @@
+# ローカル開発用の Secret。`.dev.vars` にコピーして値を入れる（.dev.vars は .gitignore 済み）。
+# 本番は `npx wrangler secret put AUTH_PEPPER` / `KEY_ENCRYPTION_KEY` で入れる。
+# どちらも 32 文字以上のランダムな文字列にする。例: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+
+# パスワードのハッシュに混ぜる秘密の値（pepper）。変えると全員のパスワードが通らなくなる
+AUTH_PEPPER=change-me-to-a-long-random-string
+# API キーの暗号化と、アップロード / ダウンロード URL の署名に使う鍵。変えると保存済みの API キーが読めなくなる
+KEY_ENCRYPTION_KEY=change-me-to-another-long-random-string

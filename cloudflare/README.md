@@ -76,3 +76,10 @@ npm run dev
 - 名刺の読み取りは Workflows（`card-scan`）。Gemini の Files API に R2 から直接流し、終わったら消す。
 - `/api/*` は `run_worker_first` で必ず Worker に渡している（画像や CSV への「ページ移動」が SPA の index.html にならないように）。
 - 期限切れのセッション、古い試行の記録、削除から 30 日の名刺は、ログインのたびに掃除する（Cron は使わない）。
+
+## ローカルで確かめたこと（2026-09-30）
+
+`wrangler dev --local` で、初期設定 → ログイン → 画像のアップロード → 読み取り（API キー未登録なので `not_configured` で失敗）→ 手入力で確定 → 検索（ひらがな・カタカナ・半角カナ・`+81`・空白の揺れ）→ 画像の配信 → ユーザーの追加 → 開発コンソール（設定、モデル、プロンプト、CSV 出力、利用状況）→ 議事録（作成、区切りの送信、finish、generate → `not_configured` で失敗、一覧）が通った。
+
+- Workflow を起動した直後に、ログに `The Workers runtime canceled this request because it detected that your Worker's code had hung` が出ることがある。Workflow 自体は最後まで進み、結果も D1 に書かれている。ローカルの Workflows の模擬に由来するものと見ているが、本番で出ないことは未確認。
+- `curl` で日本語を送るときは、シェルの文字コード（Windows の Git Bash は cp932）に注意する。ファイルに UTF-8 で書いて `--data-binary @file` で送る。

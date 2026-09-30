@@ -12,7 +12,11 @@
   "scripts": {
     "check": "node scripts/check-syntax.mjs",
     "test": "npm run test --workspaces --if-present",
-    "test:core": "npm test -w packages/core"
+    "test:core": "npm test -w packages/core",
+    "build:aws": "node aws/scripts/build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
   },
   "engines": {
     "node": ">=22"

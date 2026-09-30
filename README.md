@@ -34,6 +34,19 @@ npm run test:core    # 共通ロジックのテスト
 - Cloudflare 版: `cd cloudflare && npx wrangler dev`（D1、R2、Workflows をローカルで模擬。詳細は `cloudflare/README.md`）
 - AWS 版: `aws/README.md`
 
-## 状態
+## 状態（2026-09-30）
 
-実装中。**デプロイはまだしていない。** テストは最小限。
+**デプロイはまだしていない。** テストは最小限（98 件）。
+
+| 領域 | 確かめたこと | 確かめていないこと |
+| --- | --- | --- |
+| `packages/core` | 単体テスト 32 件（崩れた JSON の見本 12 種類を含む） | Gemini / OpenAI の実 API との整合（`responseSchema`、`thinkingConfig` の形など） |
+| `web/` | 構文、import の解決、mock サーバーでの描画（headless Chrome） | 実ブラウザでの操作、録音（`web/dev/recorder-check.html` で確認できる）、Cognito の PKCE |
+| `cloudflare/` | 単体テスト 43 件、`wrangler deploy --dry-run`、`wrangler dev --local` で API を通しで実行（`cloudflare/README.md`） | 本番の Cloudflare、CPU 10 ミリ秒に収まるか、Files API へのストリーム送信 |
+| `aws/` | 単体テスト 23 件、esbuild で 5 本の Lambda を束ねられること | **Terraform は未検証**（この PC に無い。`terraform validate` と `plan` が要る）、Cognito のトリガーの実イベント、実 AWS |
+
+既知の未実装・要判断:
+
+- AWS 版: 論理削除した名刺の 30 日後の実削除、CloudWatch アラームと Budgets、画像 5MB の上限の強制（署名付き PUT のため）、Inbound federation トリガーの Terraform 化（`enable_inbound_federation_trigger`、既定 false で手動）
+- AWS 版の利用状況: 文字起こしの回数が「区切りの数」で数えられる（1 回の作成で 12 区切りなら 12）。集計の単位を決める必要がある
+- 両版: 議事録の本文を手で直す機能は無い（設計どおり）

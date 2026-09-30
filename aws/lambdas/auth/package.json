@@ -1,0 +1,16 @@
+{
+  "name": "@hyper-sfa/aws-auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@hyper-sfa/core": "*",
+    "@hyper-sfa/aws-shared": "*",
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0"
+  }
+}

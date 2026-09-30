@@ -1,0 +1,26 @@
+# このファイルを terraform.tfvars にコピーして値を入れる（terraform.tfvars は .gitignore 済み）。
+# google_client_secret は、ファイルに書かずに環境変数で渡すのがおすすめ:
+#   export TF_VAR_google_client_secret='...'
+
+project = "hyper-sfa"
+env     = "stg" # 本番は "prod"
+
+# Google Cloud で作った OAuth クライアント（aws/README.md の手順）
+google_client_id = "0000000000-xxxxxxxxxxxxxxxx.apps.googleusercontent.com"
+# google_client_secret = "GOCSPX-..."
+
+# 会社の Google Workspace のドメイン
+allowed_hd = "example.co.jp"
+
+# 最初の開発者。この人がログインして、ほかの人を管理コンソールで登録する
+initial_developer_email = "taro@example.co.jp"
+
+# ffmpeg の layer（省略可）。arm64 の静的ビルドを bin/ffmpeg として入れた zip
+# ffmpeg_layer_zip = "./ffmpeg-layer.zip"
+
+# 開発中に足すオリジン（省略可）
+# extra_cors_origins  = ["http://localhost:8787"]
+# extra_callback_urls = ["http://localhost:8787/auth/callback"]
+
+# Inbound federation のトリガーを手動で設定し終えたら true（outputs の manual_steps を参照）
+# enable_inbound_federation_trigger = true

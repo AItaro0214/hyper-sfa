@@ -3,7 +3,7 @@ import { safeJson } from './time.js';
 
 
 // 上限。外から来た値（Gemini の応答も含む）を切り詰め、DB とレスポンスが膨らまないようにする
-const MAX = { company: 200, department: 200, name: 100, nameReading: 200, note: 2000, rawText: 10000, item: 200, items: 10 };
+const MAX = { company: 200, department: 200, title: 100, name: 100, nameReading: 200, note: 2000, rawText: 10000, item: 200, items: 10 };
 
 const cut = (s, n) => String(s ?? '').trim().slice(0, n);
 
@@ -17,6 +17,7 @@ export function sanitizeCard(input) {
   return {
     company: cut(input.company, MAX.company),
     department: cut(input.department, MAX.department),
+    title: cut(input.title, MAX.title),
     name: cut(input.name, MAX.name),
     nameReading: cut(input.nameReading, MAX.nameReading),
     phones: list(input.phones),
@@ -37,6 +38,7 @@ export function keyColumns(keys) {
     department_n: keys.departmentN ?? '',
     phones_digits: (keys.phonesDigits ?? []).join(' '),
     emails_n: (keys.emailsN ?? []).join(' '),
+    title_n: keys.titleN ?? '',
     note_n: keys.noteN ?? '',
   };
 }
@@ -72,6 +74,7 @@ export function rowToCard(row, { detail = false } = {}) {
     status: row.status,
     company: row.company,
     department: row.department,
+    title: row.title ?? '',
     name: row.name,
     nameReading: row.name_reading,
     phones: safeJson(row.phones, []),
@@ -100,7 +103,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // 項目ごとの差分（履歴の changes）。変わっていない項目は入れない
 export function diffCards(before, after) {
   const changes = [];
-  for (const field of ['company', 'department', 'name', 'nameReading', 'phones', 'mobiles', 'emails', 'note']) {
+  for (const field of ['company', 'department', 'title', 'name', 'nameReading', 'phones', 'mobiles', 'emails', 'note']) {
     if (!same(before[field], after[field])) changes.push({ field, before: before[field], after: after[field] });
   }
   return changes;

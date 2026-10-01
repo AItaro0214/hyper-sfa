@@ -72,8 +72,9 @@ export function buildCardSearch(
     params.push(pattern(w));
   }
   for (const w of terms.note ?? []) {
-    where.push(like('note_n'));
-    params.push(pattern(w));
+    // 役職は独立した列だが、検索の欄は備考と共通（契約の検索パラメータを増やさない）
+    where.push(`(${like('note_n')} OR ${like('title_n')})`);
+    params.push(pattern(w), pattern(w));
   }
   if (filters.ownerId) {
     where.push(`${col('created_by')} = ?`);

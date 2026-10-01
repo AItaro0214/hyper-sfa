@@ -98,9 +98,9 @@
 ```json
 {
   "id": "...", "status": "processing" | "review" | "failed" | "confirmed",
-  "company": "株式会社アシスト", "department": "営業部", "name": "山田 太郎", "nameReading": "やまだ たろう",
+  "company": "株式会社アシスト", "department": "営業部", "title": "営業部長", "name": "山田 太郎", "nameReading": "やまだ たろう",
   "phones": ["03-1234-5678"], "mobiles": ["090-1234-5678"], "emails": ["taro@example.co.jp"],
-  "note": "役職: 営業部長", "rawText": "...",
+  "note": "資格: 一級建築士", "rawText": "...",
   "deptIds": ["..."], "departments": [{ "id": "...", "name": "営業部" }],
   "imageUrls": { "thumb": "...", "front": "...", "back": null },
   "createdBy": { "id": "...", "name": "佐藤 花子" }, "createdAt": "...",
@@ -123,9 +123,9 @@
 | `POST /api/cards/scan` | `{ "frontKey", "backKey"?, "thumbKey", "deptIds"? }` → `{ "id", "status": "processing" }` 202。`deptIds` を省くと自分の所属部署 |
 | `GET /api/cards/{id}/status` | `{ "status", "card"?, "failure"? }`。`review` `confirmed` なら `card` 付き |
 | `POST /api/cards/{id}/rescan` | 再生成。`{ "status": "processing" }` 202 |
-| `GET /api/cards` | 検索。`company` `name` `department` `phone` `email` `note` `owner`（利用者 ID）`from` `to`（登録日、`YYYY-MM-DD`）`status` `dept`（担当部署 ID）`cursor` `limit`。応答 `{ "items", "nextCursor", "total" }`。`items` は `rawText` 抜き |
+| `GET /api/cards` | 検索。`company` `name` `department` `phone` `email` `note`（備考と役職の両方に当てる） `owner`（利用者 ID）`from` `to`（登録日、`YYYY-MM-DD`）`status` `dept`（担当部署 ID）`cursor` `limit`。応答 `{ "items", "nextCursor", "total" }`。`items` は `rawText` 抜き |
 | `GET /api/cards/{id}` | 詳細 |
-| `PUT /api/cards/{id}` | `{ company, department, name, nameReading, phones, mobiles, emails, note, deptIds, version, source: "review" | "search" | "detail", confirm: true }`。`confirm: true` で `review` → `confirmed`。`version` 不一致は 409 |
+| `PUT /api/cards/{id}` | `{ company, department, title, name, nameReading, phones, mobiles, emails, note, deptIds, version, source: "review" | "search" | "detail", confirm: true }`。`confirm: true` で `review` → `confirmed`。`version` 不一致は 409 |
 | `DELETE /api/cards/{id}` | 論理削除 |
 | `POST /api/cards/{id}/images/replace` | 画像を縮小して置き換えるための PUT 先。`{ "uploads": [{ "kind": "front" / "back", "url", "method": "PUT", "headers" }] }`。**既存のキーに上書きする。** 編集できる人だけ。15 分有効 |
 | `POST /api/cards/{id}/images/optimized` | 縮小済みの印を付ける。`{ "imageOptimized": true, "imageOptimizedAt" }`。`version` は増えず、履歴にも残らない |

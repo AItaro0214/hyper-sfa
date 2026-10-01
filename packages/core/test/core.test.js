@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeText, phoneDigits, searchKeys, parseQuery, matchCard,
   buildCsv, parseCsv, detectAndDecode, historyToCsvRows, HISTORY_CSV_COLUMNS,
-  planUserImport, parseUserRows,
+  planUserImport, parseUserRows, CARD_CSV_COLUMNS, cardToCsvRow,
   estimateCost, priceAt, DEFAULT_MODELS, DEFAULT_SELECTION, tierOf,
   offsetTimestamps, joinSegments,
   capabilitiesFor, levelFor, canSeeCard, canDeleteCard, DEFAULT_POSITIONS,
@@ -21,7 +21,7 @@ test('normalizeText / phoneDigits', () => {
 test('searchKeys / matchCard', () => {
   const keys = searchKeys({
     company: '株式会社アシスト', name: '山田 太郎', nameReading: 'やまだ たろう', department: '営業本部 第二営業部',
-    phones: ['03-1234-5678'], mobiles: ['+81 90-1111-2222'], emails: ['Taro@Example.co.jp'], note: '資格: 一級建築士',
+    phones: ['03-1234-5678'], mobiles: ['+81 90-1111-2222'], emails: ['Taro@Example.co.jp'], note: '資格: 一級建築士', title: '営業部長',
   });
   const m = (p) => matchCard(keys, parseQuery(p));
   assert.ok(m({ company: 'ｱｼｽﾄ' }));
@@ -33,6 +33,8 @@ test('searchKeys / matchCard', () => {
   assert.ok(m({ email: 'TARO@example' }));
   assert.ok(m({ note: '建築士' }));
   assert.ok(m({ department: '第二' }));
+  assert.ok(m({ note: '部長' }));
+  assert.equal(searchKeys({ title: '営業部長' }).titleN, '営業部長');
   assert.equal(m({ company: 'アシスト', name: '佐藤' }), false);
   assert.equal(m({ phone: '0299' }), false);
   assert.ok(m({}));
@@ -265,4 +267,10 @@ test('DEFAULT_SELECTION のモデルは一覧にあり、用途に合う', () =>
     assert.ok(m, id);
     assert.ok(m.uses.includes(use), id + ' は ' + use + ' に使える');
   }
+});
+
+test('CSV: 役職の列は部署名の次', () => {
+  const labels = CARD_CSV_COLUMNS.map((c) => c.label);
+  assert.equal(labels[labels.indexOf('部署名') + 1], '役職');
+  assert.equal(cardToCsvRow({ title: '代表取締役' }).title, '代表取締役');
 });

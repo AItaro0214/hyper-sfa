@@ -33,7 +33,9 @@ test('電話番号は数字の列に当てる', () => {
 test('LIKE の特殊文字は文字どおりに探す', () => {
   assert.equal(escapeLike('100%_\\'), '100\\%\\_\\\\');
   const q = buildCardSearch({ terms: { note: ['50%'] } });
-  assert.deepEqual(q.countParams, ['%50\\%%']);
+  // 備考の語は note_n と title_n の両方に当てる
+  assert.deepEqual(q.countParams, ['%50\\%%', '%50\\%%']);
+  assert.ok(q.countSql.includes('(note_n LIKE ?') && q.countSql.includes(' OR title_n LIKE ?'));
 });
 
 test('登録者、期間、カーソル、件数', () => {

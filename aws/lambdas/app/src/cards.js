@@ -11,8 +11,8 @@ import { consumeScan } from './rate.js';
 import { listMinutesByIds } from './minutes.js';
 
 const KEY_RE = /^cards\/([0-9A-Za-z]{26})\/(front|back|thumb)\.jpg$/;
-const EDIT_FIELDS = ['company', 'department', 'name', 'nameReading', 'phones', 'mobiles', 'emails', 'note', 'deptIds'];
-const MAX = { company: 200, department: 200, name: 100, nameReading: 100, note: 1000, listItem: 254, listCount: 10 };
+const EDIT_FIELDS = ['company', 'department', 'title', 'name', 'nameReading', 'phones', 'mobiles', 'emails', 'note', 'deptIds'];
+const MAX = { company: 200, department: 200, title: 100, name: 100, nameReading: 100, note: 1000, listItem: 254, listCount: 10 };
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const nowIso = () => new Date().toISOString();
 
@@ -145,7 +145,7 @@ export function registerCardRoutes(app, { index }) {
       ...K.gsi1(id, at),
       id,
       status: 'processing',
-      company: '', department: '', name: '', nameReading: '', phones: [], mobiles: [], emails: [], note: '', rawText: '',
+      company: '', department: '', title: '', name: '', nameReading: '', phones: [], mobiles: [], emails: [], note: '', rawText: '',
       keys: searchKeys({}),
       imageFrontKey: front.key,
       imageBackKey: back?.key ?? null,
@@ -289,6 +289,7 @@ export function registerCardRoutes(app, { index }) {
     const next = {
       company: cleanString(body.company, MAX.company, 'company', errors) ?? item.company ?? '',
       department: cleanString(body.department, MAX.department, 'department', errors) ?? item.department ?? '',
+      title: cleanString(body.title, MAX.title, 'title', errors) ?? item.title ?? '',
       name: cleanString(body.name, MAX.name, 'name', errors) ?? item.name ?? '',
       nameReading: cleanString(body.nameReading, MAX.nameReading, 'nameReading', errors) ?? item.nameReading ?? '',
       note: cleanString(body.note, MAX.note, 'note', errors) ?? item.note ?? '',

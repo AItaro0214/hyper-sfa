@@ -290,6 +290,7 @@ export function cardRoutes(app) {
     const input = {
       company: check.str(body.company, 'company', { max: 200, label: '会社名' }),
       department: check.str(body.department, 'department', { max: 200, label: '部署名' }),
+      title: check.str(body.title, 'title', { max: 100, label: '役職' }),
       name: check.str(body.name, 'name', { max: 100, label: '氏名' }),
       nameReading: check.str(body.nameReading, 'nameReading', { max: 200, label: '氏名の読み' }),
       phones: check.strList(body.phones, 'phones', { label: '電話番号' }),
@@ -317,18 +318,18 @@ export function cardRoutes(app) {
     const now = nowIso();
     const isEdit = row.status === 'confirmed' && changes.length > 0;
     const res = await c.env.DB.prepare(
-      `UPDATE cards SET status = ?, company = ?, department = ?, name = ?, name_reading = ?,
+      `UPDATE cards SET status = ?, company = ?, department = ?, title = ?, name = ?, name_reading = ?,
          phones = ?, mobiles = ?, emails = ?, note = ?,
-         company_n = ?, name_n = ?, reading_n = ?, department_n = ?, phones_digits = ?, emails_n = ?, note_n = ?,
+         company_n = ?, name_n = ?, reading_n = ?, department_n = ?, phones_digits = ?, emails_n = ?, title_n = ?, note_n = ?,
          failure = CASE WHEN ? THEN NULL ELSE failure END,
          updated_by = ?, updated_at = ?, edit_count = edit_count + ?, version = version + 1
        WHERE id = ? AND version = ? AND deleted_at IS NULL`,
     )
       .bind(
         confirming ? 'confirmed' : row.status,
-        after.company, after.department, after.name, after.nameReading,
+        after.company, after.department, after.title, after.name, after.nameReading,
         JSON.stringify(after.phones), JSON.stringify(after.mobiles), JSON.stringify(after.emails), after.note,
-        keys.company_n, keys.name_n, keys.reading_n, keys.department_n, keys.phones_digits, keys.emails_n, keys.note_n,
+        keys.company_n, keys.name_n, keys.reading_n, keys.department_n, keys.phones_digits, keys.emails_n, keys.title_n, keys.note_n,
         confirming ? 1 : 0,
         user.id, now, isEdit ? 1 : 0,
         row.id, body.version,

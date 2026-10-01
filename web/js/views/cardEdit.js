@@ -53,6 +53,7 @@ export async function mountCardForm(container, opts) {
       <div class="fields">
         <label class="field"><span>会社名</span><input name="company" value="${esc(card.company)}" autocomplete="off"></label>
         <label class="field"><span>部署名</span><input name="department" value="${esc(card.department)}" autocomplete="off"></label>
+        <label class="field"><span>役職</span><input name="title" value="${esc(card.title)}" autocomplete="off"></label>
         <label class="field"><span>氏名</span><input name="name" value="${esc(card.name)}" autocomplete="off"></label>
         <label class="field"><span>ふりがな</span><input name="nameReading" value="${esc(card.nameReading)}" autocomplete="off"></label>
         <label class="field"><span>電話番号（複数は改行）</span><textarea name="phones" rows="2">${esc(joinLines(card.phones))}</textarea></label>
@@ -126,6 +127,7 @@ export async function mountCardForm(container, opts) {
   const read = () => ({
     company: form.elements.company.value.trim(),
     department: form.elements.department.value.trim(),
+    title: form.elements.title.value.trim(),
     name: form.elements.name.value.trim(),
     nameReading: form.elements.nameReading.value.trim(),
     phones: splitLines(form.elements.phones.value),
@@ -182,6 +184,7 @@ export function cardViewHtml(card) {
     <dl>
       ${row('会社名', esc(card.company) || '-')}
       ${row('部署名', esc(card.department) || '-')}
+      ${row('役職', esc(card.title) || '-')}
       ${row('氏名', `${esc(card.name)}${card.nameReading ? `<small class="muted"> （${esc(card.nameReading)}）</small>` : ''}`)}
       ${row('電話番号', list(card.phones))}
       ${row('携帯電話', list(card.mobiles))}

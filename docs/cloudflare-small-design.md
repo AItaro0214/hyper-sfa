@@ -117,8 +117,8 @@ roleplay-saas と meeting-notes-cf で使った「PBKDF2 + pepper」と同じ考
 | `users` | id, login_id, password_hash, salt, iterations, role, status, display_name, must_change_password, created_at, last_login_at |
 | `sessions` | id_hash, user_id, created_at, last_seen_at, expires_at, device |
 | `login_attempts` | login_id, ip, at, ok |
-| `cards` | id, company, department, name, name_reading, phones, mobiles, emails, note, raw_text, image_front_key, image_back_key, thumb_key, status, failure, created_by, created_at, updated_by, updated_at, edit_count, scan_count, version, deleted_at |
-| `cards`（検索用の列） | company_n, name_n, reading_n, department_n, phones_digits, emails_n, note_n（全角 / 半角、大文字 / 小文字、ひらがな / カタカナをそろえたもの） |
+| `cards` | id, company, department, title, name, name_reading, phones, mobiles, emails, note, raw_text, image_front_key, image_back_key, thumb_key, status, failure, created_by, created_at, updated_by, updated_at, edit_count, scan_count, version, deleted_at |
+| `cards`（検索用の列） | company_n, name_n, reading_n, department_n, phones_digits, emails_n, title_n, note_n（全角 / 半角、大文字 / 小文字、ひらがな / カタカナをそろえたもの） |
 | `card_history` | id, card_id, type, actor_id, actor_name, source, changes（JSON）, at |
 | `minutes` | id, title, held_at, mode, duration_sec, memo, owner_id, status, step, failure, audio_expires_at, download_key, transcript_key, transcript_version, summary_key, summary_version, created_at, updated_at |
 | `minute_segments` | minute_id, seq, key, mime, start_sec, duration_sec, size, transcript_status |

@@ -23,8 +23,8 @@ const USERS = [
   { id: 'u2', email: 'hanako@example.co.jp', loginId: 'hanako', displayName: '佐藤 花子', position: 'MG', role: 'member', deptIds: ['d1', 'd2'], departments: [{ id: 'd1', name: '営業部' }, { id: 'd2', name: '開発部' }], status: 'invited', lastLoginAt: null },
 ];
 const card = (i, o = {}) => ({
-  id: `c${i}`, status: 'confirmed', company: `株式会社サンプル${i}`, department: '営業部', name: `田中 太郎${i}`, nameReading: 'たなか たろう',
-  phones: ['03-1234-5678'], mobiles: ['090-1234-5678'], emails: [`taro${i}@example.co.jp`], note: '役職: 部長', rawText: 'raw',
+  id: `c${i}`, status: 'confirmed', company: `株式会社サンプル${i}`, department: '営業部', title: '営業部長', name: `田中 太郎${i}`, nameReading: 'たなか たろう',
+  phones: ['03-1234-5678'], mobiles: ['090-1234-5678'], emails: [`taro${i}@example.co.jp`], note: '資格: 一級建築士', rawText: 'raw',
   deptIds: ['d1'], departments: [{ id: 'd1', name: '営業部' }], imageUrls: { thumb: `/mock-img/c${i}.svg`, front: `/mock-img/c${i}.svg`, back: null },
   createdBy: { id: 'u2', name: '佐藤 花子' }, createdAt: new Date().toISOString(), updatedBy: { id: 'u1', name: '山田 管理' }, updatedAt: new Date().toISOString(),
   editCount: 1, scanCount: 1, version: 1, failure: null, ...o,
@@ -127,7 +127,7 @@ async function api(req, res, url) {
     if (q.get('department')) items = items.filter((c) => has(c.department, q.get('department')));
     if (q.get('email')) items = items.filter((c) => has(c.emails.join(' '), q.get('email')));
     if (q.get('phone')) items = items.filter((c) => (c.phones.concat(c.mobiles)).join('').replace(/\D/g, '').includes(q.get('phone').replace(/\D/g, '')));
-    if (q.get('note')) items = items.filter((c) => has(c.note, q.get('note')));
+    if (q.get('note')) items = items.filter((c) => has(c.note + ' ' + c.title, q.get('note')));
     if (q.get('dept')) items = items.filter((c) => c.deptIds.includes(q.get('dept')));
     const start = Number(q.get('cursor') || 0), limit = Number(q.get('limit') || 50);
     const page = items.slice(start, start + limit).map(({ rawText, ...r }) => r);
@@ -143,7 +143,7 @@ async function api(req, res, url) {
     if (sub === '/minutes') return send(res, 200, { items: [{ id: 'm1', title: `${c.company} 定例`, heldAt: new Date().toISOString(), status: 'done' }], nextCursor: null });
     if (!sub && m === 'PUT') {
       if (body.version !== c.version) return err(res, 409, 'conflict', 'ほかの人が先に更新しました');
-      Object.assign(c, { company: body.company, department: body.department, name: body.name, nameReading: body.nameReading, phones: body.phones, mobiles: body.mobiles, emails: body.emails, note: body.note, deptIds: body.deptIds || c.deptIds, version: c.version + 1, updatedAt: new Date().toISOString() });
+      Object.assign(c, { company: body.company, department: body.department, title: body.title ?? '', name: body.name, nameReading: body.nameReading, phones: body.phones, mobiles: body.mobiles, emails: body.emails, note: body.note, deptIds: body.deptIds || c.deptIds, version: c.version + 1, updatedAt: new Date().toISOString() });
       c.departments = c.deptIds.map((id) => DEPTS.find((d) => d.id === id)).filter(Boolean);
       if (body.confirm) c.status = 'confirmed';
       return send(res, 200, c);

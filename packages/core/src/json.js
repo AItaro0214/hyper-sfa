@@ -281,7 +281,7 @@ export function extractJson(text) {
 // ---- 名刺の形にそろえる ----
 
 const ARRAY_KEYS = ['phones', 'mobiles', 'emails'];
-const STRING_KEYS = ['company', 'department', 'name', 'nameReading', 'note', 'rawText'];
+const STRING_KEYS = ['company', 'department', 'title', 'name', 'nameReading', 'note', 'rawText'];
 
 // 別名の表。キーは小文字で比べる（大文字小文字は無視）。
 const ALIASES = {
@@ -290,6 +290,7 @@ const ALIASES = {
   mobiles: ['mobile', 'cell', '携帯', '携帯電話', '携帯電話番号'],
   company: ['company_name', 'organization', '会社名', '会社'],
   department: ['dept', '部署', '部署名'],
+  title: ['position', 'job_title', 'role', '役職', '肩書', '肩書き'],
   name: ['full_name', '氏名', '名前'],
   nameReading: ['name_reading', 'reading', 'kana', 'furigana', 'ふりがな', '読み'],
   note: ['notes', 'remarks', '備考'],
@@ -371,7 +372,7 @@ export function normalizeCard(value) {
   }
   const src = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
 
-  const card = { company: '', department: '', name: '', nameReading: '', phones: [], mobiles: [], emails: [], note: '', rawText: '' };
+  const card = { company: '', department: '', title: '', name: '', nameReading: '', phones: [], mobiles: [], emails: [], note: '', rawText: '' };
   for (const [key, raw] of Object.entries(src)) {
     const canonical = canonicalKey(key);
     if (!canonical) {
@@ -412,6 +413,7 @@ export const CARD_RESPONSE_SCHEMA = {
   properties: {
     company: str('会社名'),
     department: str('部署名'),
+    title: str('役職（例: 営業部長、代表取締役。無ければ空文字）'),
     name: str('氏名'),
     phones: strArray('電話番号（固定電話）'),
     mobiles: strArray('携帯電話番号'),
@@ -420,5 +422,5 @@ export const CARD_RESPONSE_SCHEMA = {
     name_reading: str('氏名の読み（名刺に書かれている場合だけ）'),
     raw_text: str('名刺に書かれている文字の全文'),
   },
-  required: ['company', 'department', 'name', 'phones', 'mobiles', 'emails', 'note', 'name_reading', 'raw_text'],
+  required: ['company', 'department', 'title', 'name', 'phones', 'mobiles', 'emails', 'note', 'name_reading', 'raw_text'],
 };

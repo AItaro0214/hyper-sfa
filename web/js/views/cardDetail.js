@@ -108,7 +108,7 @@ export async function renderCardDetail(container, { id }) {
 }
 
 export const TYPE_LABEL = { create: '登録', edit: '編集', rescan: '読み取り直し', delete: '削除', restore: '復元' };
-export const FIELD_LABEL = { company: '会社名', department: '部署名', name: '氏名', nameReading: 'ふりがな', phones: '電話番号', mobiles: '携帯電話', emails: 'メール', note: '備考', deptIds: '担当部署' };
+export const FIELD_LABEL = { company: '会社名', department: '部署名', title: '役職', name: '氏名', nameReading: 'ふりがな', phones: '電話番号', mobiles: '携帯電話', emails: 'メール', note: '備考', deptIds: '担当部署' };
 const val = (v) => (Array.isArray(v) ? v.join(', ') : v ?? '');
 
 // 履歴の 1 件（管理コンソールの履歴と詳細で共用）。編集は項目ごとに変更前 → 変更後。

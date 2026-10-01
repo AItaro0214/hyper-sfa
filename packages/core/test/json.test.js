@@ -87,3 +87,11 @@ test('isEmptyCard', () => {
   assert.equal(isEmptyCard(normalizeCard({ company: null, emails: [] })), true);
   assert.equal(isEmptyCard(normalizeCard({ name: 'x' })), false);
 });
+
+test('normalizeCard: 役職の別名', () => {
+  for (const k of ['title', 'position', 'job_title', 'role', '役職', '肩書', '肩書き']) {
+    assert.equal(normalizeCard({ [k]: '営業部長' }).title, '営業部長', k);
+  }
+  assert.equal(normalizeCard({}).title, '');
+  assert.equal(isEmptyCard(normalizeCard({ title: '部長' })), false);
+});

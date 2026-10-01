@@ -130,16 +130,16 @@ export class CardScanWorkflow extends WorkflowEntrypoint {
         const c = result.card;
         const k = keyColumns(result.keys);
         await env.DB.prepare(
-          `UPDATE cards SET status = 'review', company = ?, department = ?, name = ?, name_reading = ?,
+          `UPDATE cards SET status = 'review', company = ?, department = ?, title = ?, name = ?, name_reading = ?,
              phones = ?, mobiles = ?, emails = ?, note = ?, raw_text = ?,
-             company_n = ?, name_n = ?, reading_n = ?, department_n = ?, phones_digits = ?, emails_n = ?, note_n = ?,
+             company_n = ?, name_n = ?, reading_n = ?, department_n = ?, phones_digits = ?, emails_n = ?, title_n = ?, note_n = ?,
              failure = NULL, extraction = ?, updated_at = ?, version = version + 1
            WHERE id = ?`,
         )
           .bind(
-            c.company, c.department, c.name, c.nameReading,
+            c.company, c.department, c.title, c.name, c.nameReading,
             JSON.stringify(c.phones), JSON.stringify(c.mobiles), JSON.stringify(c.emails), c.note, c.rawText,
-            k.company_n, k.name_n, k.reading_n, k.department_n, k.phones_digits, k.emails_n, k.note_n,
+            k.company_n, k.name_n, k.reading_n, k.department_n, k.phones_digits, k.emails_n, k.title_n, k.note_n,
             extraction, at, cardId,
           )
           .run();
@@ -148,16 +148,16 @@ export class CardScanWorkflow extends WorkflowEntrypoint {
         const c = result.card;
         const k = keyColumns(result.keys);
         await env.DB.prepare(
-          `UPDATE cards SET status = 'failed', company = ?, department = ?, name = ?, name_reading = ?,
+          `UPDATE cards SET status = 'failed', company = ?, department = ?, title = ?, name = ?, name_reading = ?,
              phones = ?, mobiles = ?, emails = ?, note = ?, raw_text = ?,
-             company_n = ?, name_n = ?, reading_n = ?, department_n = ?, phones_digits = ?, emails_n = ?, note_n = ?,
+             company_n = ?, name_n = ?, reading_n = ?, department_n = ?, phones_digits = ?, emails_n = ?, title_n = ?, note_n = ?,
              failure = ?, extraction = ?, updated_at = ?, version = version + 1
            WHERE id = ?`,
         )
           .bind(
-            c.company, c.department, c.name, c.nameReading,
+            c.company, c.department, c.title, c.name, c.nameReading,
             JSON.stringify(c.phones), JSON.stringify(c.mobiles), JSON.stringify(c.emails), c.note, c.rawText,
-            k.company_n, k.name_n, k.reading_n, k.department_n, k.phones_digits, k.emails_n, k.note_n,
+            k.company_n, k.name_n, k.reading_n, k.department_n, k.phones_digits, k.emails_n, k.title_n, k.note_n,
             JSON.stringify(failureFor('truncated')), extraction, at, cardId,
           )
           .run();

@@ -82,7 +82,7 @@ async function scanCard(cardId, card, deps) {
   await deps.ddb.update(k.pk, k.sk, {
     set: {
       status: 'review',
-      company: c.company, department: c.department, name: c.name, nameReading: c.nameReading,
+      company: c.company, department: c.department, title: c.title, name: c.name, nameReading: c.nameReading,
       phones: c.phones, mobiles: c.mobiles, emails: c.emails, note: c.note, rawText: c.rawText,
       keys: searchKeys(c),
       failure: null,
@@ -259,7 +259,7 @@ function finalizeCard(n) {
   const s = (v, max) => String(v ?? '').slice(0, max);
   const a = (v, max) => (Array.isArray(v) ? v : []).map((x) => s(x, max).trim()).filter(Boolean).slice(0, 10);
   return {
-    company: s(n.company, 200), department: s(n.department, 200), name: s(n.name, 100), nameReading: s(n.nameReading, 100),
+    company: s(n.company, 200), department: s(n.department, 200), title: s(n.title, 100), name: s(n.name, 100), nameReading: s(n.nameReading, 100),
     phones: a(n.phones, 50), mobiles: a(n.mobiles, 50),
     emails: a(n.emails, 254).map((e) => e.toLowerCase()),
     note: s(n.note, 1000), rawText: s(n.rawText, 3000),
@@ -280,7 +280,7 @@ async function saveFailure(cardId, card, err, deps) {
   if (err.kind === 'truncated' && err.partialCard) {
     const c = err.partialCard;
     Object.assign(set, {
-      company: c.company, department: c.department, name: c.name, nameReading: c.nameReading,
+      company: c.company, department: c.department, title: c.title, name: c.name, nameReading: c.nameReading,
       phones: c.phones, mobiles: c.mobiles, emails: c.emails, note: c.note, rawText: c.rawText,
     });
   }

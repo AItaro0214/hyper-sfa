@@ -12,7 +12,7 @@ const FIELDS = [
   { key: 'department', label: '相手の部署名' },
   { key: 'phone', label: '電話番号' },
   { key: 'email', label: 'メール' },
-  { key: 'note', label: '備考' },
+  { key: 'note', label: '備考・役職' },
 ];
 
 export async function renderHome(container, _p, query, minutesMod) {
@@ -98,7 +98,7 @@ export async function renderHome(container, _p, query, minutesMod) {
       <div class="row-main">
         <div class="row-company">${esc(c.company) || '<span class="muted">（会社名なし）</span>'} <span class="muted">${esc(c.department)}</span>
           ${c.status !== 'confirmed' ? `<span class="badge badge-${esc(c.status)}">${esc(STATUS_LABEL[c.status] || c.status)}</span>` : ''}</div>
-        <div class="row-name"><a href="/cards/${encodeURIComponent(c.id)}">${esc(c.name) || '（氏名なし）'}</a></div>
+        <div class="row-name"><a href="/cards/${encodeURIComponent(c.id)}">${esc(c.name) || '（氏名なし）'}</a>${c.title ? ` <small class="muted">${esc(c.title)}</small>` : ''}</div>
         <div class="row-sub mono">${[...(c.phones || []), ...(c.mobiles || [])].map((t) => `<span class="nw">${esc(t)}</span>`).join(' / ')}</div>
         <div class="row-sub">${(c.emails || []).map(esc).join(' / ')}</div>
       </div>

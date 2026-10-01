@@ -123,6 +123,7 @@ export function detectAndDecode(buf) {
 export const CARD_CSV_COLUMNS = Object.freeze([
   { key: 'company', label: '会社名' },
   { key: 'department', label: '部署名' },
+  { key: 'title', label: '役職' },
   { key: 'name', label: '氏名' },
   { key: 'nameReading', label: '氏名の読み' },
   { key: 'phones', label: '電話番号', type: 'phone' },
@@ -179,6 +180,7 @@ export const MINUTES_USAGE_CSV_COLUMNS = Object.freeze([
 const FIELD_LABELS = {
   company: '会社名',
   department: '部署名',
+  title: '役職',
   name: '氏名',
   nameReading: '氏名の読み',
   phones: '電話番号',
@@ -208,6 +210,7 @@ export function cardToCsvRow(card, extra = {}) {
   return {
     company: c.company,
     department: c.department,
+    title: c.title,
     name: c.name,
     nameReading: c.nameReading,
     phones: c.phones,

@@ -13,7 +13,7 @@ extractJson(text) // → { value: object, repairs: string[], truncated: boolean 
 `docs/design.md` §5.6 の 5 段階。取り出せなければ `JsonExtractError`（`code: 'parse'`）を投げる。`repairs` は効いた手当ての名前（`'fence'` `'slice'` `'comments'` `'trailing_comma'` `'fullwidth'` `'quotes'` `'newline'` `'truncated'`）。`truncated` は 5 段階目で閉じた場合に `true`。
 
 ```js
-normalizeCard(value) // → { company, department, name, nameReading, phones, mobiles, emails, note, rawText, coerced: string[] }
+normalizeCard(value) // → { company, department, title, name, nameReading, phones, mobiles, emails, note, rawText, coerced: string[] }
 ```
 
 キーの別名（`email` `mail` `tel` `phone` `mobile` `会社名` `氏名` など）を正しいキーに読み替え、文字列 ↔ 配列のずれを直し、外側の `result` や配列を剥がし、知らないキーを捨てる。`coerced` は直した内容の名前。すべて空なら `isEmptyCard(card)` が `true`。
@@ -27,9 +27,9 @@ CARD_RESPONSE_SCHEMA // Gemini の構造化出力に渡す JSON スキーマ（d
 ```js
 normalizeText(s)      // NFKC、小文字、カタカナ → ひらがな、空白の統一
 phoneDigits(s)        // '+81 3-1234-5678' → '0312345678'
-searchKeys(card)      // → { companyN, nameN, readingN, departmentN, phonesDigits: string[], emailsN: string[], noteN }
+searchKeys(card)      // → { companyN, nameN, readingN, departmentN, phonesDigits: string[], emailsN: string[], titleN, noteN }
 parseQuery(params)    // { company, name, department, phone, email, note } → 各欄を空白で分けた語の配列
-matchCard(keys, query) // すべての条件を満たすか（AND）。部分一致
+matchCard(keys, query) // すべての条件を満たすか（AND）。部分一致。`note` の語は noteN と titleN の両方に当てる（役職でも探せる）
 ```
 
 ## 3. プロンプト `prompts.js`
@@ -96,7 +96,7 @@ buildCsv(rows, columns) // → string（BOM 付き UTF-8、CRLF）。columns: [{
 ```js
 parseCsv(text) // → string[][]。カンマとタブを自動判定。引用符、引用符内の改行に対応
 detectAndDecode(arrayBuffer) // UTF-8（BOM の有無）と Shift_JIS を判定して文字列に（TextDecoder('shift_jis')）
-CARD_CSV_COLUMNS, HISTORY_CSV_COLUMNS, MINUTES_USAGE_CSV_COLUMNS
+CARD_CSV_COLUMNS（部署名の次に役職）, HISTORY_CSV_COLUMNS, MINUTES_USAGE_CSV_COLUMNS
 cardToCsvRow(card), historyToCsvRows(event)
 ```
 

@@ -22,6 +22,7 @@ export async function presentCard(item, { detail = false, duplicates } = {}) {
     status: item.status,
     company: item.company ?? '',
     department: item.department ?? '',
+    title: item.title ?? '',
     name: item.name ?? '',
     nameReading: item.nameReading ?? '',
     phones: item.phones ?? [],

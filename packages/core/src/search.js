@@ -40,6 +40,7 @@ export function searchKeys(card) {
     departmentN: compact(c.department),
     phonesDigits: phones.map(phoneDigits).filter(Boolean),
     emailsN: (c.emails ?? []).map(normalizeText).filter(Boolean),
+    titleN: normalizeText(c.title),
     noteN: normalizeText(c.note),
   };
 }
@@ -76,6 +77,7 @@ export function matchCard(keys, query) {
     // 電話番号の欄は固定と携帯の両方を探す（searchKeys が 1 つの配列にまとめている）
     all(q.phone, (w) => keys.phonesDigits.some((d) => d.includes(w))) &&
     all(q.email, (w) => keys.emailsN.some((e) => e.includes(w))) &&
-    all(q.note, (w) => keys.noteN.includes(w))
+    // 役職は独立した項目だが、検索の欄は増やさない。備考の欄の語を役職にも当てる
+    all(q.note, (w) => keys.noteN.includes(w) || (keys.titleN ?? '').includes(w))
   );
 }

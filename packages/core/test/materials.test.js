@@ -124,6 +124,9 @@ test('buildResponsesRequest', () => {
   assert.deepEqual(b.reasoning, { effort: 'low' });
   const plain = JSON.parse(buildResponsesRequest({ model: 'm', apiKey: 'k', parts: [] }).body);
   assert.equal(plain.text, undefined);
+  assert.equal('reasoning' in plain, false);
+  const nul = JSON.parse(buildResponsesRequest({ model: 'm', apiKey: 'k', parts: [], reasoningEffort: null }).body);
+  assert.equal('reasoning' in nul, false);
 });
 
 test('buildOpenAIFileUploadRequest', () => {

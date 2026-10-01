@@ -86,6 +86,36 @@ export async function renderDevModels(container) {
     page.querySelector('[data-list]').innerHTML = html || '<p class="empty">該当するモデルがありません</p>';
   }
 
+  // Gemini は thinkingLevel、OpenAI は reasoningEffort。空は「モデルの既定（自動）」
+  function thinkLine(m) {
+    const v = m.provider === 'openai' ? m.reasoningEffort : m.thinkingLevel;
+    return `<span class="model-note">考える量: ${v ? esc(v) : 'モデルの既定（自動）'}</span>`;
+  }
+
+  const effortSelect = (cur) => `<select name="reasoningEffort"><option value="">モデルの既定（自動）</option>${['none', 'minimal', 'low', 'medium', 'high'].map((v) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
+
+  function thinkModal(m) {
+    const openai = m.provider === 'openai';
+    const body = openModal(`<form class="stack">
+      ${openai
+        ? `<label class="field"><span>OpenAI の考える量（reasoning effort）</span>${effortSelect(m.reasoningEffort)}</label>`
+        : `<label class="field"><span>考える量（任意）</span><input name="thinkingLevel" value="${esc(m.thinkingLevel || '')}"></label>`}
+      <p class="alert alert-error" data-err hidden></p>
+      <div class="actions"><button type="button" class="btn" data-close>キャンセル</button><button class="btn btn-primary" type="submit">保存</button></div></form>`, { title: `${m.label || m.id} の考える量` });
+    body.querySelector('[data-close]').addEventListener('click', closeModal);
+    body.querySelector('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const err = body.querySelector('[data-err]');
+      try {
+        await api.patch(`/api/dev/models/${encodeURIComponent(m.id)}`, openai ? { reasoningEffort: f.elements.reasoningEffort.value || null } : { thinkingLevel: f.elements.thinkingLevel.value.trim() || null });
+        closeModal();
+        toast('保存しました', 'success');
+        await load();
+      } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+    });
+  }
+
   function modelRow(m, use, est, sel, i) {
     const tier = m.tier || tierOf(m);
     const now = cost(m, est, new Date());
@@ -101,7 +131,8 @@ export async function renderDevModels(container) {
       <span class="model-est">${now == null ? '—' : `約 ${yen(now)} 円`}<small>${later != null ? `${esc(ch)} から 約 ${yen(later)} 円` : per}</small></span>
       <span class="model-price">${priceLine(m)}</span>
       ${m.note ? `<span class="model-note">${esc(m.note)}</span>` : ''}
-      ${m.builtin ? '' : `<span class="model-act"><button type="button" class="link" data-toggle="${esc(m.id)}">${m.active === false ? '有効にする' : '無効にする'}</button></span>`}</label>`;
+      ${thinkLine(m)}
+      <span class="model-act"><button type="button" class="link" data-think="${esc(m.id)}">考える量を変える</button>${m.builtin ? '' : ` <button type="button" class="link" data-toggle="${esc(m.id)}">${m.active === false ? '有効にする' : '無効にする'}</button>`}</span></label>`;
   }
 
   page.addEventListener('change', (e) => {
@@ -133,6 +164,9 @@ export async function renderDevModels(container) {
       e.preventDefault();
       const m = models.find((x) => x.id === e.target.dataset.toggle);
       try { await api.patch(`/api/dev/models/${encodeURIComponent(m.id)}`, { active: m.active === false }); await load(); } catch (ex) { toast(errorMessage(ex), 'error'); }
+    } else if (e.target.closest('[data-think]')) {
+      e.preventDefault();
+      thinkModal(models.find((x) => x.id === e.target.closest('[data-think]').dataset.think));
     } else if (e.target.closest('[data-add]')) addModal();
   });
 
@@ -147,6 +181,7 @@ export async function renderDevModels(container) {
       <label class="field"><span>音声入力単価（任意）</span><input name="audioInput" type="number" step="any" min="0"></label>
       <label class="field"><span>1 分あたりの料金（USD、任意）</span><input name="perMinute" type="number" step="any" min="0"></label>
       <label class="field"><span>考える量（任意）</span><input name="thinkingLevel"></label>
+      <label class="field" data-effort hidden><span>OpenAI の考える量（reasoning effort）</span>${effortSelect('')}</label>
       <label class="field"><span>1 回に渡せる音声の長さ（分、任意）</span><input name="maxAudioMinutes" type="number" min="1"></label>
       <label class="field"><span>提供終了日（任意）</span><input name="shutdownAt" type="date"></label>
       <label class="field"><span>公開の状態</span><select name="status"><option value="stable">安定版</option><option value="preview">プレビュー</option></select></label>
@@ -160,7 +195,13 @@ export async function renderDevModels(container) {
         body.querySelector('#avail').innerHTML = (r.items || []).map((id) => `<option value="${esc(id)}"></option>`).join('');
       } catch { body.querySelector('#avail').innerHTML = ''; }
     };
-    f.elements.provider.addEventListener('change', loadAvail);
+    const syncThink = () => {
+      const openai = f.elements.provider.value === 'openai';
+      f.querySelector('[data-effort]').hidden = !openai;
+      f.elements.thinkingLevel.closest('label').hidden = openai;
+    };
+    f.elements.provider.addEventListener('change', () => { syncThink(); loadAvail(); });
+    syncThink();
     loadAvail();
     body.querySelector('[data-close]').addEventListener('click', closeModal);
     f.addEventListener('submit', async (e) => {
@@ -173,7 +214,7 @@ export async function renderDevModels(container) {
         await api.post('/api/dev/models', {
           id: f.elements.id.value.trim(), provider: f.elements.provider.value, label: f.elements.label.value.trim() || f.elements.id.value.trim(), uses,
           pricing: { input: num('input'), output: num('output'), audioInput: num('audioInput'), perMinute: num('perMinute') },
-          thinkingLevel: f.elements.thinkingLevel.value.trim() || undefined, maxAudioMinutes: num('maxAudioMinutes'), shutdownAt: f.elements.shutdownAt.value || undefined, status: f.elements.status.value, note: f.elements.note.value.trim() || undefined, active: true,
+          thinkingLevel: f.elements.provider.value === 'openai' ? undefined : f.elements.thinkingLevel.value.trim() || undefined, reasoningEffort: f.elements.provider.value === 'openai' ? f.elements.reasoningEffort.value || undefined : undefined, maxAudioMinutes: num('maxAudioMinutes'), shutdownAt: f.elements.shutdownAt.value || undefined, status: f.elements.status.value, note: f.elements.note.value.trim() || undefined, active: true,
         });
         closeModal();
         toast('追加しました', 'success');

@@ -76,6 +76,8 @@ async function settingsBody() {
 
 // ---- モデル ----
 
+const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'];
+
 const presentModel = (m) => ({
   id: m.id,
   provider: m.provider,
@@ -83,6 +85,7 @@ const presentModel = (m) => ({
   uses: m.uses ?? [],
   pricing: m.pricing ?? {},
   thinkingLevel: m.thinkingLevel ?? null,
+  reasoningEffort: m.reasoningEffort ?? null,
   maxAudioMinutes: m.maxAudioMinutes ?? null,
   shutdownAt: m.shutdownAt ?? null,
   tier: m.tier ?? null,
@@ -171,6 +174,11 @@ function cleanModelFields(b, errors, { partial }) {
   }
   if (!partial || has('pricing')) out.pricing = cleanPricing(b.pricing, errors);
   if (has('thinkingLevel')) out.thinkingLevel = b.thinkingLevel === null ? null : String(b.thinkingLevel).slice(0, 30);
+  if (has('reasoningEffort')) {
+    const v = b.reasoningEffort === null || b.reasoningEffort === '' ? null : String(b.reasoningEffort).slice(0, 30);
+    if (v !== null && !REASONING_EFFORTS.includes(v)) errors.push({ field: 'reasoningEffort', message: 'none / minimal / low / medium / high のいずれか、または空にしてください' });
+    else out.reasoningEffort = v;
+  }
   if (has('maxAudioMinutes')) {
     if (b.maxAudioMinutes !== null && !(Number.isInteger(b.maxAudioMinutes) && b.maxAudioMinutes > 0)) errors.push({ field: 'maxAudioMinutes', message: '正の整数で指定してください' });
     else out.maxAudioMinutes = b.maxAudioMinutes;
@@ -220,7 +228,7 @@ export function registerDevRoutes(app) {
     if (!PROVIDERS.includes(b.provider)) errors.push({ field: 'provider', message: 'gemini か openai' });
     const fields = cleanModelFields(b, errors, { partial: false });
     if (errors.length) throw validation('入力を確かめてください', errors);
-    const item = { ...K.model(b.id), id: b.id, provider: b.provider, builtin: false, active: true, thinkingLevel: null, maxAudioMinutes: null, shutdownAt: null, ...fields };
+    const item = { ...K.model(b.id), id: b.id, provider: b.provider, builtin: false, active: true, thinkingLevel: null, reasoningEffort: null, maxAudioMinutes: null, shutdownAt: null, ...fields };
     try {
       await ddb.put(item, { condition: 'attribute_not_exists(pk)' });
     } catch (e) {

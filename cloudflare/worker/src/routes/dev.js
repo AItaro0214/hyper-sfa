@@ -70,6 +70,8 @@ async function fetchProviderModels(env, provider) {
   return mod.parseListModels(json);
 }
 
+const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'];
+
 function readModelInput(check, body, { partial }) {
   const out = {};
   const has = (k) => body[k] !== undefined;
@@ -85,6 +87,11 @@ function readModelInput(check, body, { partial }) {
     else out.pricing = p;
   }
   if (has('thinkingLevel')) out.thinkingLevel = body.thinkingLevel ? check.str(body.thinkingLevel, 'thinkingLevel', { max: 20 }) : null;
+  if (has('reasoningEffort')) {
+    const v = body.reasoningEffort ? check.str(body.reasoningEffort, 'reasoningEffort', { max: 30 }) : null;
+    if (v !== null && !REASONING_EFFORTS.includes(v)) check.fail('reasoningEffort', 'none / minimal / low / medium / high のいずれか、または空にしてください');
+    else out.reasoningEffort = v;
+  }
   if (has('maxAudioMinutes')) {
     if (body.maxAudioMinutes === null) out.maxAudioMinutes = null;
     else if (Number.isInteger(body.maxAudioMinutes) && body.maxAudioMinutes > 0) out.maxAudioMinutes = body.maxAudioMinutes;
@@ -216,10 +223,10 @@ export function devRoutes(app) {
     check.done();
     if (await getModel(c.env, id)) throw new ApiError(409, 'conflict', 'このモデル ID はすでに登録されています');
     await c.env.DB.prepare(
-      `INSERT INTO models (id, provider, label, uses, pricing, thinking_level, max_audio_minutes, shutdown_at, active, builtin)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO models (id, provider, label, uses, pricing, thinking_level, reasoning_effort, max_audio_minutes, shutdown_at, active, builtin)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     )
-      .bind(id, provider, input.label, JSON.stringify(input.uses), JSON.stringify(input.pricing), input.thinkingLevel ?? null, input.maxAudioMinutes ?? null, input.shutdownAt ?? null, input.active ?? 1)
+      .bind(id, provider, input.label, JSON.stringify(input.uses), JSON.stringify(input.pricing), input.thinkingLevel ?? null, input.reasoningEffort ?? null, input.maxAudioMinutes ?? null, input.shutdownAt ?? null, input.active ?? 1)
       .run();
     await audit(c.env, c.get('user').id, 'model.create', { modelId: id });
     return c.json(await getModel(c.env, id), 201);
@@ -238,14 +245,15 @@ export function devRoutes(app) {
       uses: input.uses ?? current.uses,
       pricing: input.pricing ?? current.pricing,
       thinkingLevel: 'thinkingLevel' in input ? input.thinkingLevel : current.thinkingLevel,
+      reasoningEffort: 'reasoningEffort' in input ? input.reasoningEffort : current.reasoningEffort,
       maxAudioMinutes: 'maxAudioMinutes' in input ? input.maxAudioMinutes : current.maxAudioMinutes,
       shutdownAt: 'shutdownAt' in input ? input.shutdownAt : current.shutdownAt,
       active: input.active ?? (current.active ? 1 : 0),
     };
     await c.env.DB.prepare(
-      'UPDATE models SET label = ?, uses = ?, pricing = ?, thinking_level = ?, max_audio_minutes = ?, shutdown_at = ?, active = ? WHERE id = ?',
+      'UPDATE models SET label = ?, uses = ?, pricing = ?, thinking_level = ?, reasoning_effort = ?, max_audio_minutes = ?, shutdown_at = ?, active = ? WHERE id = ?',
     )
-      .bind(next.label, JSON.stringify(next.uses), JSON.stringify(next.pricing), next.thinkingLevel, next.maxAudioMinutes, next.shutdownAt, next.active, id)
+      .bind(next.label, JSON.stringify(next.uses), JSON.stringify(next.pricing), next.thinkingLevel, next.reasoningEffort, next.maxAudioMinutes, next.shutdownAt, next.active, id)
       .run();
     await audit(c.env, c.get('user').id, 'model.update', { modelId: id });
     return c.json(await getModel(c.env, id));

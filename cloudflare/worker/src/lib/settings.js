@@ -60,6 +60,7 @@ export function rowToModel(r) {
     uses: safeJson(r.uses, []),
     pricing: safeJson(r.pricing, {}),
     thinkingLevel: r.thinking_level ?? null,
+    reasoningEffort: r.reasoning_effort ?? null,
     maxAudioMinutes: r.max_audio_minutes ?? null,
     shutdownAt: r.shutdown_at ?? null,
     tier: r.tier ?? d.tier ?? null,
@@ -103,8 +104,8 @@ export async function ensureModels(env) {
   const missing = DEFAULT_MODELS.filter((m) => !have.has(m.id));
   if (missing.length === 0) return;
   const stmt = env.DB.prepare(
-    `INSERT OR IGNORE INTO models (id, provider, label, uses, pricing, thinking_level, max_audio_minutes, shutdown_at, tier, status, note, active, builtin)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
+    `INSERT OR IGNORE INTO models (id, provider, label, uses, pricing, thinking_level, reasoning_effort, max_audio_minutes, shutdown_at, tier, status, note, active, builtin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
   );
   await env.DB.batch(
     missing.map((m) =>
@@ -115,6 +116,7 @@ export async function ensureModels(env) {
         JSON.stringify(m.uses ?? []),
         JSON.stringify(m.pricing ?? {}),
         m.thinkingLevel ?? null,
+        m.reasoningEffort ?? null,
         m.maxAudioMinutes ?? null,
         m.shutdownAt ?? null,
         m.tier ?? null,

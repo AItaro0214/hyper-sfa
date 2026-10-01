@@ -43,7 +43,7 @@ renderPrompt(template, vars) // {{KEY}} を差し込む。無いキーは空文�
 ## 4. モデル一覧 `models.js`
 
 ```js
-DEFAULT_MODELS // 設計書の初期一覧。[{ id, provider: 'gemini'|'openai', label, uses: [...], pricing, thinkingLevel, maxAudioMinutes, shutdownAt, builtin: true }]
+DEFAULT_MODELS // 設計書の初期一覧。[{ id, provider: 'gemini'|'openai', label, uses: [...], pricing, thinkingLevel, reasoningEffort?, maxAudioMinutes, shutdownAt, builtin: true }]。`reasoningEffort` は OpenAI の文章モデルだけ（初期値 `'medium'`）
 DEFAULT_SELECTION // { card: 'gemini-3.5-flash-lite', transcribe: 'gemini-3.5-flash-lite', summarize: 'gemini-3.6-flash' }
 priceAt(model, date)   // changesAt を考慮した { input, output, audioInput, perMinute }
 estimateCost({ model, inputTokens, outputTokens, audioSeconds, date }) // USD
@@ -71,7 +71,7 @@ classifyGeminiError({ status, json }) // → { kind: 'not_configured'|'provider'
 ```js
 buildTranscriptionRequest({ model, apiKey, audio: Blob|ArrayBuffer, mimeType, prompt, language: 'ja' }) // multipart。→ { url, method, headers, body: FormData }
 parseTranscriptionResponse(json) // → { text, usage? }
-buildChatRequest({ model, apiKey, system, user, maxOutputTokens, reasoningEffort }) // /v1/chat/completions
+buildChatRequest({ model, apiKey, system, user, maxOutputTokens, reasoningEffort }) // /v1/chat/completions。reasoningEffort が空（null / undefined）なら reasoning_effort を body に載せない
 parseChatResponse(json) // → { text, finishReason, usage }
 buildListModelsRequest({ apiKey })
 parseListModels(json)
@@ -165,6 +165,7 @@ buildOpenAIFileUploadRequest({ apiKey, filename, contentType, purpose = 'user_da
 parseOpenAIFileResponse(json)  // → { id, bytes }
 buildOpenAIFileDeleteRequest({ apiKey, fileId })
 buildResponsesRequest({ model, apiKey, instructions, parts, jsonSchema, schemaName, maxOutputTokens, reasoningEffort })
+// reasoningEffort が空（null / undefined）なら reasoning を body に載せない。
 // /v1/responses。parts: [{ type: 'input_text', text } | { type: 'input_file', fileId }]。
 // jsonSchema があれば text.format = { type: 'json_schema', name: schemaName, schema: jsonSchema, strict: false }
 parseResponsesResponse(json)   // → { text（output_text を連結）, finishReason（status と incomplete_details.reason）, usage: { inputTokens, outputTokens } }

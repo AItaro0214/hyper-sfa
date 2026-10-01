@@ -161,7 +161,7 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 | `GET /api/dev/settings` | `{ "keys": { "gemini": { "configured": true, "last4": "ab12", "updatedAt", "updatedBy" }, "openai": {...} }, "models": { "card": "gemini-3.5-flash-lite", "transcribe": "...", "summarize": "..." }, "prompts": { "card": { "version": 3 }, "transcribe": {...}, "summarize": {...} } }` |
 | `PUT /api/dev/keys/{provider}` | `{ "key": "..." }`。`provider` は `gemini` / `openai`。応答は `settings` と同じ。キーは応答にもログにも出さない |
 | `POST /api/dev/keys/{provider}/test` | `{ "ok": true, "models": 12 }` または `provider_error` |
-| `GET /api/dev/models` | `{ "items": [{ "id", "provider", "label", "uses": ["card", "transcribe", "summarize"], "pricing": { "input", "output", "audioInput"?, "perMinute"?, "changesAt"?, "next"? }, "thinkingLevel", "maxAudioMinutes", "shutdownAt", "active", "builtin" }] }` |
+| `GET /api/dev/models` | `{ "items": [{ "id", "provider", "label", "uses": ["card", "transcribe", "summarize"], "pricing": { "input", "output", "audioInput"?, "perMinute"?, "changesAt"?, "next"? }, "thinkingLevel", "reasoningEffort", "maxAudioMinutes", "shutdownAt", "active", "builtin" }] }`。`thinkingLevel` は Gemini、`reasoningEffort` は OpenAI の考える量。`reasoningEffort` は `none` / `minimal` / `low` / `medium` / `high` か `null`（`null` は API に渡さず、モデルの既定に任せる）。それ以外は `validation` |
 | `POST /api/dev/models` | 追加（同じ形）。`PATCH /api/dev/models/{id}` で変更・有効 / 無効 |
 | `GET /api/dev/models/available?provider=gemini` | 登録済みのキーで使えるモデル ID の一覧 `{ "items": ["gemini-3.8-flash", ...] }` |
 | `PUT /api/dev/model` | `{ "use": "card" | "transcribe" | "summarize", "modelId" }` |

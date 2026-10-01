@@ -162,7 +162,7 @@ export async function callGemini({ deps, apiKey, model, prompt, parts, maxOutput
 
 export async function callOpenAIChat({ deps, apiKey, model, prompt, maxOutputTokens }) {
   const f = deps.fetch ?? fetch;
-  const req = deps.buildChatRequest({ model: model.id, apiKey, system: '', user: prompt, maxOutputTokens, reasoningEffort: model.thinkingLevel });
+  const req = deps.buildChatRequest({ model: model.id, apiKey, system: '', user: prompt, maxOutputTokens, reasoningEffort: model.reasoningEffort });
   const res = await f(req.url, { method: req.method, headers: req.headers, body: req.body });
   const json = await readJson(res);
   if (!res.ok) throw openaiError(deps, res.status, json);
@@ -178,7 +178,7 @@ export async function callOpenAIChat({ deps, apiKey, model, prompt, maxOutputTok
  */
 export async function callOpenAIResponses({ deps, apiKey, model, parts, jsonSchema, schemaName, maxOutputTokens }) {
   const f = deps.fetch ?? fetch;
-  const req = deps.buildResponsesRequest({ model: model.id, apiKey, parts, jsonSchema, schemaName, maxOutputTokens, reasoningEffort: model.thinkingLevel });
+  const req = deps.buildResponsesRequest({ model: model.id, apiKey, parts, jsonSchema, schemaName, maxOutputTokens, reasoningEffort: model.reasoningEffort });
   const res = await f(req.url, { method: req.method, headers: req.headers, body: req.body });
   const json = await readJson(res);
   if (!res.ok) throw openaiError(deps, res.status, json);

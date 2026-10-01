@@ -13,7 +13,7 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
+      source = "hashicorp/aws"
       # user_pool_tier（Cognito の Essentials）を使うため 5.80 以上
       version = ">= 5.80.0, < 7.0.0"
     }

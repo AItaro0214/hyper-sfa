@@ -69,10 +69,6 @@ locals {
       COGNITO_USER_POOL_ID  = aws_cognito_user_pool.main.id
       ALLOWED_HD            = var.allowed_hd
     })
-    auth = {
-      TABLE_NAME = aws_dynamodb_table.main.name
-      ALLOWED_HD = var.allowed_hd
-    }
     scan = merge(local.env_base, {
       API_KEYS_SECRET_ARN = aws_secretsmanager_secret.api_keys.arn
     })
@@ -80,6 +76,13 @@ locals {
       API_KEYS_SECRET_ARN = aws_secretsmanager_secret.api_keys.arn
       FFMPEG_PATH         = "/opt/bin/ffmpeg"
     })
+  }
+
+  # auth は Cognito から呼ばれる側なので、Cognito を参照する lambda_env とは別に持つ。
+  # 同じ map に入れると Terraform が map 全体の依存として扱い、循環（Cognito → auth → lambda_env → Cognito）になる
+  auth_env = {
+    TABLE_NAME = aws_dynamodb_table.main.name
+    ALLOWED_HD = var.allowed_hd
   }
 }
 
@@ -598,7 +601,7 @@ resource "aws_lambda_function" "auth" {
   }
 
   environment {
-    variables = local.lambda_env["auth"]
+    variables = local.auth_env
   }
 
   depends_on = [aws_cloudwatch_log_group.fn, aws_iam_role_policy.logs]

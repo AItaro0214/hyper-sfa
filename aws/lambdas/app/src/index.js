@@ -6,6 +6,7 @@ import { ddb, currentUser, errorHandler, notFound } from '@hyper-sfa/aws-shared'
 import { createSearchIndex } from './search.js';
 import { registerCardRoutes } from './cards.js';
 import { registerMinutesRoutes } from './minutes.js';
+import { registerChatRoutes } from './chat.js';
 import { listDepartments, listUsers, deptRefs } from './org.js';
 import { SCAN_PER_DAY } from './rate.js';
 
@@ -82,6 +83,7 @@ app.get('/api/directory', async (c) => {
 
 registerCardRoutes(app, { index });
 registerMinutesRoutes(app);
+registerChatRoutes(app);
 
 // 上のどれにも当たらない /api/admin と /api/dev は API Gateway がこの Lambda に送らない。
 // 万一届いても、存在を教えない

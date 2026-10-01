@@ -11,6 +11,7 @@ import {
 import { openShareDialog } from './share.js';
 import { mountPeopleEditor, peopleToPayload } from './pickers.js';
 import { renderMaterials } from './materials.js';
+import { renderQa, loadChat } from './qa.js';
 
 const POLL_MS = 3000;
 const GIVE_UP_MS = 20 * 60 * 1000; // api-contract §8: 20 分で失敗扱い
@@ -24,6 +25,8 @@ export function renderDetail(container, params) {
   let pollStart = 0;
   let sig = '';
   const cache = {}; // タブごとの本文
+  let qa = null; // 質問タブ用に読んだ自分のスレッド。null = 未確認、{ available: false } = タブを出さない
+  let qaStop = null;
 
   container.innerHTML = '<div class="mn-page"><p class="mn-muted">読み込んでいます…</p></div>';
 
@@ -38,9 +41,10 @@ export function renderDetail(container, params) {
       const prevStatus = m && m.status;
       m = next;
       // 処理が終わったら、本文を読み直す
-      if (prevStatus && prevStatus !== m.status) { delete cache.summary; delete cache.transcript; }
+      if (prevStatus && prevStatus !== m.status) { delete cache.summary; delete cache.transcript; qa = null; }
       sig = signature(m);
       if (changed) paint(); else paintProgress();
+      probeQa();
       schedule();
     } catch (e) {
       if (!alive()) return;
@@ -86,9 +90,7 @@ export function renderDetail(container, params) {
       <div data-r="progress"></div>
       ${failedByTimeout ? `<div class="mn-alert mn-alert-error">20 分たっても進まないため、失敗として扱います。${own ? '<button class="mn-btn" data-retry>もう一度試す</button>' : ''}</div>` : ''}
       ${m.status === 'recording' ? '' : '<div data-r="materials"></div>'}
-      <div class="mn-tabs" role="tablist">
-        ${[['summary', '議事録'], ['transcript', '文字起こし'], ['audio', '音声']].map(([k, l]) => `<button role="tab" class="mn-tab${tab === k ? ' on' : ''}" data-tab="${k}">${l}</button>`).join('')}
-      </div>
+      <div class="mn-tabs" role="tablist">${tabsHtml()}</div>
       <div data-r="body" class="mn-body"></div>
       <div data-r="actions" class="mn-actions"></div>
     </div>`;
@@ -97,6 +99,23 @@ export function renderDetail(container, params) {
     if (matBox) renderMaterials(matBox, m, { onChanged: () => { pollStart = 0; return load({ quiet: true }); } });
     paintBody();
     paintActions();
+  }
+
+  // 質問のタブは、文字起こしがあって質問が使えるときだけ出す（minutes-design §16.2）
+  const qaOn = () => Boolean(m.transcript && qa && qa.available && !qa.pending);
+  function tabsHtml() {
+    const list = [['summary', '議事録'], ['transcript', '文字起こし'], ['audio', '音声']];
+    if (qaOn()) list.push(['qa', '質問']);
+    return list.map(([k, l]) => `<button role="tab" class="mn-tab${tab === k ? ' on' : ''}" data-tab="${k}">${l}</button>`).join('');
+  }
+  async function probeQa() {
+    if (qa !== null || !m.transcript || isProcessing(m.status)) return;
+    qa = { pending: true };
+    const r = await loadChat(id);
+    if (!alive()) return;
+    qa = r;
+    const tabs = container.querySelector('.mn-tabs');
+    if (tabs) tabs.innerHTML = tabsHtml();
   }
 
   // 状態の欄だけ更新（処理中の 3 秒おきの更新で使う）
@@ -124,8 +143,15 @@ export function renderDetail(container, params) {
   async function paintBody() {
     const body = container.querySelector('[data-r=body]');
     if (!body) return;
+    if (qaStop) { qaStop(); qaStop = null; }
+    if (tab === 'qa' && !qaOn() && !(qa && qa.pending)) tab = 'summary';
     const mine = tab;
     if (mine === 'audio') return paintAudio(body);
+    if (mine === 'qa') {
+      if (!qaOn()) { body.innerHTML = '<p class="mn-muted">読み込んでいます…</p>'; return; }
+      qaStop = renderQa(body, { id, data: qa, onSeek: seekTranscript });
+      return;
+    }
     const has = mine === 'summary' ? m.summary : m.transcript;
     if (!has) {
       body.innerHTML = `<p class="mn-muted">${isProcessing(m.status) ? 'できあがるまでお待ちください。' : mine === 'summary' ? '議事録はまだありません。' : '文字起こしはまだありません。'}</p>`;
@@ -239,7 +265,10 @@ export function renderDetail(container, params) {
     const t = e.target.closest('button, a');
     if (!t) return;
     if (t.dataset.seek) { seekTranscript(t.dataset.seek); return; }
-    if (t.dataset.tab) { tab = t.dataset.tab; container.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b === t)); paintBody(); paintActions(); return; }
+    if (t.dataset.tab) { tab = t.dataset.tab; container.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b === t)); paintBody(); paintActions();
+      // 質問はページの下の方にあるので、タブごと画面の上に寄せて、履歴と入力欄が見えるようにする
+      if (tab === 'qa') container.querySelector('.mn-tabs').scrollIntoView({ block: 'start', behavior: 'smooth' });
+      return; }
     if (t.hasAttribute('data-share')) { openShareDialog(m, () => load({ quiet: true })); return; }
     if (t.hasAttribute('data-edit')) { openEdit(); return; }
     if (t.hasAttribute('data-retry')) {
@@ -309,5 +338,5 @@ export function renderDetail(container, params) {
   }
 
   load();
-  return () => { gone = true; stop(); };
+  return () => { gone = true; stop(); if (qaStop) qaStop(); };
 }

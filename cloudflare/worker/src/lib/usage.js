@@ -7,11 +7,12 @@
 //   transcribe_retry  文字起こしのやり直し
 //   summarize         議事録の作成（初回）
 //   summarize_retry   議事録の作り直し
+//   qa                議事録への質問（1 往復で 1 件。minutes-design.md §16）
 // 失敗した呼び出しは ok=false で同じ kind に記録する（usage_monthly.failed が増える）。
 import { estimateCost, monthKey, ulid } from '../core.js';
 import { nowIso } from './time.js';
 
-export const MINUTES_USAGE_KINDS = ['recording', 'transcribe', 'transcribe_retry', 'summarize', 'summarize_retry'];
+export const MINUTES_USAGE_KINDS = ['recording', 'transcribe', 'transcribe_retry', 'summarize', 'summarize_retry', 'qa'];
 
 /**
  * @param o.id 同じ呼び出しを二重に数えないための ID（Workflow のステップ再実行対策）。省略で新規

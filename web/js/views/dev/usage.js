@@ -4,8 +4,8 @@ import { state } from '../../state.js';
 import { esc, toast, formatDate, formatDateTime, formatDuration, usd, errorMessage } from '../../ui.js';
 import { settingsNav } from '../settingsNav.js';
 
-const USE_LABEL = { card: '名刺の読み取り', transcribe: '文字起こし', summarize: '議事録の作成', test: '試し' };
-const EVENT_LABEL = { transcribe: '文字起こし', summarize: '議事録', test: '試し', 'transcribe-retry': '文字起こし（やり直し）', 'summarize-retry': '議事録（作り直し）' };
+const USE_LABEL = { card: '名刺の読み取り', transcribe: '文字起こし', summarize: '議事録の作成', qa: '質問', test: '試し' };
+const EVENT_LABEL = { transcribe: '文字起こし', summarize: '議事録', test: '試し', 'transcribe-retry': '文字起こし（やり直し）', 'summarize-retry': '議事録（作り直し）', qa: '質問' };
 const num = (n) => Number(n || 0).toLocaleString('ja-JP');
 const hm = (sec) => `${Math.floor((sec || 0) / 3600)}:${String(Math.floor(((sec || 0) % 3600) / 60)).padStart(2, '0')}`;
 const deptNames = (u) => (u.departments || []).map((d) => (typeof d === 'string' ? d : d.name)).join('、');
@@ -57,6 +57,7 @@ export async function renderDevUsage(container) {
     ['tRetry', 'やり直し', (u) => u.transcribe?.retry],
     ['sFirst', '議事録 初回', (u) => u.summarize?.first],
     ['sRetry', '作り直し', (u) => u.summarize?.retry],
+    ['qa', '質問', (u) => u.qa?.count],
     ['failed', '失敗', (u) => u.failed],
     ['cost', '概算費用', (u) => u.cost],
     ['lastUsedAt', '最後に使った日', (u) => u.lastUsedAt || '', 'str'],
@@ -71,7 +72,7 @@ export async function renderDevUsage(container) {
     const t = data.total || {};
     page.querySelector('[data-users]').innerHTML = `<table class="table sortable"><thead><tr>${COLS.map(([k, l]) => `<th><button type="button" class="th-btn" data-sort="${k}">${esc(l)}${k === sortKey ? (sortDir < 0 ? ' ▼' : ' ▲') : ''}</button></th>`).join('')}</tr></thead><tbody>
       ${rows.map((u) => `<tr data-uid="${esc(u.user.id)}" class="clickable">${COLS.map(([k, , g, ty]) => `<td class="${ty === 'str' ? '' : 'num'}">${cell(k, g(u), u)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${COLS.length}" class="empty">記録がありません。</td></tr>`}</tbody>
-      ${rows.length ? `<tfoot><tr><td>合計（${rows.length} 人）</td><td></td><td class="num">${num(t.recordings)}</td><td class="num">${hm(t.recordedSec)}</td><td class="num">${num(t.transcribe?.first)}</td><td class="num">${num(t.transcribe?.retry)}</td><td class="num">${num(t.summarize?.first)}</td><td class="num">${num(t.summarize?.retry)}</td><td class="num">${num(t.failed)}</td><td class="num">${usd(t.cost)}</td><td></td></tr></tfoot>` : ''}</table>`;
+      ${rows.length ? `<tfoot><tr><td>合計（${rows.length} 人）</td><td></td><td class="num">${num(t.recordings)}</td><td class="num">${hm(t.recordedSec)}</td><td class="num">${num(t.transcribe?.first)}</td><td class="num">${num(t.transcribe?.retry)}</td><td class="num">${num(t.summarize?.first)}</td><td class="num">${num(t.summarize?.retry)}</td><td class="num">${num(t.qa?.count)}</td><td class="num">${num(t.failed)}</td><td class="num">${usd(t.cost)}</td><td></td></tr></tfoot>` : ''}</table>`;
   }
   const uq = () => ({ from: page.querySelector('[data-u-from]').value, to: page.querySelector('[data-u-to]').value, dept: page.querySelector('[data-u-dept]')?.value, includeUnused: page.querySelector('[data-u-unused]').checked ? 1 : undefined });
   async function loadUsers() {

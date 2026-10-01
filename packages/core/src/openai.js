@@ -132,11 +132,24 @@ export function buildOpenAIFileDeleteRequest({ apiKey, fileId }) {
 }
 
 /**
- * /v1/responses。parts: [{ type: 'input_text', text } | { type: 'input_file', fileId }]。
+ * /v1/responses。turns: [{ role: 'user' | 'assistant', text }]（会話。質問用）。parts: [{ type: 'input_text', text } | { type: 'input_file', fileId }]。
  */
-export function buildResponsesRequest({ model, apiKey, instructions, parts = [], jsonSchema, schemaName = 'result', maxOutputTokens, reasoningEffort }) {
+export function buildResponsesRequest({ model, apiKey, instructions, parts = [], turns, jsonSchema, schemaName = 'result', maxOutputTokens, reasoningEffort }) {
   const content = parts.map((p) => (p.type === 'input_file' ? { type: 'input_file', file_id: p.fileId } : { type: 'input_text', text: p.text }));
-  const body = { model, input: [{ role: 'user', content }] };
+  let input;
+  if (Array.isArray(turns) && turns.length) {
+    // 会話。過去の assistant の答えは output_text で渡す。parts があれば最初の user の発言の前に置く
+    input = turns.map((t) => ({
+      role: t.role === 'assistant' ? 'assistant' : 'user',
+      content: [{ type: t.role === 'assistant' ? 'output_text' : 'input_text', text: String(t.text ?? '') }],
+    }));
+    if (content.length) {
+      const first = input.find((x) => x.role === 'user');
+      if (first) first.content = [...content, ...first.content];
+      else input.unshift({ role: 'user', content });
+    }
+  } else input = [{ role: 'user', content }];
+  const body = { model, input };
   if (instructions) body.instructions = instructions;
   if (jsonSchema) body.text = { format: { type: 'json_schema', name: schemaName, schema: jsonSchema, strict: false } };
   if (maxOutputTokens) body.max_output_tokens = maxOutputTokens;

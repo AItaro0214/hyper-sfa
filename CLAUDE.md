@@ -43,4 +43,4 @@ scripts/           構文チェックなど
 
 ## デプロイ
 
-**まだしない。** Terraform も wrangler も、この段階では `plan` / `--dry-run` まで。
+この公開リポジトリからは本番に出さない。Terraform も wrangler も `plan` / `--dry-run` まで。AWS 版の本番は別の非公開リポジトリから GitHub Actions で出している（そちらには Cloudflare 版と公開リポジトリへの言及を持ち込まない）。

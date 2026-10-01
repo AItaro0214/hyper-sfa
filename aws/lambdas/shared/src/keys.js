@@ -29,6 +29,8 @@ export const K = {
   minute: (id) => ({ pk: `MIN#${id}`, sk: 'META' }),
   minuteSeg: (id, seq) => ({ pk: `MIN#${id}`, sk: `SEG#${padSeq(Number(seq), 4)}` }),
   minuteMaterial: (id, seq) => ({ pk: `MIN#${id}`, sk: `MAT#${padSeq(Number(seq), 3)}` }),
+  /** 議事録への質問のスレッド（利用者ごと）。連番は 4 桁で、質問と答えが 1 件ずつ。 */
+  minuteChat: (id, userId, seq) => ({ pk: `MIN#${id}`, sk: `CHAT#${lower(userId)}#${padSeq(Number(seq), 4)}` }),
   minuteShare: (id, email) => ({ pk: `MIN#${id}`, sk: `SHARE#${lower(email)}` }),
   userMinute: (email, heldAt, id) => ({ pk: `USER#${lower(email)}`, sk: `MIN#${heldAt}#${id}` }),
   cardMinute: (cardId, heldAt, id) => ({ pk: `CARD#${cardId}`, sk: `MIN#${heldAt}#${id}` }),

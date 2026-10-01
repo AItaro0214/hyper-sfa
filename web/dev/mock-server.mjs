@@ -32,7 +32,7 @@ const card = (i, o = {}) => ({
 const CARDS = Array.from({ length: 75 }, (_, i) => card(i + 1));
 const scans = new Map();
 let loggedIn = false;
-let devSettings = { keys: { gemini: { configured: true, last4: 'ab12', updatedAt: new Date().toISOString() }, openai: { configured: false } }, models: { card: 'gemini-3.5-flash-lite', transcribe: 'gemini-3.5-flash-lite', summarize: 'gemini-3.6-flash' }, prompts: {} };
+let devSettings = { keys: { gemini: { configured: true, last4: 'ab12', updatedAt: new Date().toISOString() }, openai: { configured: false } }, models: { card: 'gemini-3.5-flash-lite', transcribe: 'gemini-3.5-flash-lite', summarize: 'gemini-3.6-flash', qa: 'gemini-3.6-flash' }, prompts: {} };
 // 一覧は共通ロジックの初期値をそのまま使う（tier / status / note もそのまま出る）。無効の例を 1 件足す
 const MODELS = [...DEFAULT_MODELS.map((m) => structuredClone(m)), { id: 'custom-test', provider: 'openai', label: 'カスタム試験モデル', uses: ['summarize'], pricing: { input: 1, output: 4 }, status: 'preview', note: '手で追加したモデル', active: false, builtin: false }];
 const PROMPTS = { card: 'カード用プロンプト', transcribe: '文字起こし用 {{TITLE}}', summarize: '議事録用 {{TRANSCRIPT}}' };
@@ -57,6 +57,11 @@ const norm = (s) => String(s || '').normalize('NFKC').toLowerCase();
 const MATS = [{ id: 'mat1', seq: 1, name: '提案書_v3.pdf', kind: 'pdf', size: 2400000, pages: 18, outlineStatus: 'done', uploadedBy: { id: 'u1', name: '山田 管理' }, uploadedAt: new Date().toISOString() }];
 const MIN = { job: null, withMaterials: false, summaryVersion: 1, summaryMd: '## 要点\n- 見積りの提示\n- 来月の再訪が決定' };
 const MIN_TRANSCRIPT = ['[00:00:05] 本日はありがとうございます。', '[00:05:30] まず売上の推移です。', '[00:12:10] 地域別では関西が伸びています。', '[00:18:40] 次にご提案の内容です。', '[00:30:00] 以上です。'].join('\n');
+// 質問タブの見本。画面確認用に最初から 1 往復入れておく
+const CHAT = { seq: 3, items: [
+  { seq: 1, role: 'user', text: '関西の売上はどうでしたか？', modelId: null, createdAt: new Date().toISOString() },
+  { seq: 2, role: 'assistant', text: '前年より伸びています。[00:12:10] で「地域別では関西が伸びています」と説明されていました。', modelId: 'gemini-3.6-flash', createdAt: new Date().toISOString() },
+] };
 const MIN_MAPPING = () => [
   { material: 'mat1', materialName: '提案書_v3.pdf', page: 7, start: '00:12:10', end: '00:18:40', confidence: 'high' },
   { material: 'mat1', materialName: '提案書_v3.pdf', page: 9, start: '00:18:40', end: '00:29:00', confidence: 'low' },
@@ -164,6 +169,23 @@ async function api(req, res, url) {
     let h;
     if (!sub && m === 'GET') return send(res, 200, minuteView());
     if (!sub && m === 'DELETE') return send(res, 204);
+    if (sub === '/chat') {
+      if (m === 'GET') return send(res, 200, { items: CHAT.items, modelLabel: 'Gemini 3.6 Flash', available: true });
+      if (m === 'DELETE') { CHAT.items = []; return send(res, 204); }
+      if (m === 'POST') {
+        const text = String(body.text || '').trim();
+        if (!text) return err(res, 400, 'validation', '質問を入力してください');
+        if (text.length > 2000) return err(res, 400, 'validation', '質問は 2,000 字までです');
+        // 「エラー」を含む質問で失敗の表示を確かめられるようにする
+        if (text.includes('エラー')) { await new Promise((r) => setTimeout(r, 800)); return err(res, 502, 'provider_error', 'モデルの呼び出しに失敗しました'); }
+        await new Promise((r) => setTimeout(r, 1500));
+        const now = new Date().toISOString();
+        const question = { seq: CHAT.seq++, role: 'user', text, modelId: null, createdAt: now };
+        const answer = { seq: CHAT.seq++, role: 'assistant', text: 'はい。**[00:12:10]** 付近で、地域別の売上の話があり、関西が伸びているという説明がありました。\n資料のスライド 7 の棒グラフを見ながらの話です。\n- 数字の細かい内容は、文字起こしには出てきません', modelId: 'gemini-3.6-flash', createdAt: now };
+        CHAT.items.push(question, answer);
+        return send(res, 200, { question, answer, usage: { inputTokens: 41200, outputTokens: 180 } });
+      }
+    }
     if (sub === '/transcript') return send(res, 200, { text: MIN_TRANSCRIPT, version: 1 });
     if (sub === '/summary') { minuteView(); return send(res, 200, { markdown: MIN.summaryMd, version: MIN.summaryVersion, withMaterials: MIN.withMaterials, ...(MIN.withMaterials ? { mapping: MIN_MAPPING() } : {}) }); }
     if (sub === '/audio-url') return err(res, 404, 'not_found', '音声は削除されました');
@@ -232,7 +254,7 @@ async function api(req, res, url) {
   if (p === '/api/dev/minutes-test/j1') return send(res, 200, { text: '## 要点\n- テスト', usage: { inputTokens: 100, outputTokens: 50 }, elapsedMs: 900 });
   if (p === '/api/dev/export') return send(res, 200, { url: '/mock-export.csv', expiresAt: new Date(Date.now() + 300000).toISOString(), rows: 75 });
   if (p === '/api/dev/usage') return send(res, 200, { months: [{ month: new Date().toISOString().slice(0, 7), byUse: { card: { count: 75, failed: 2, inputTokens: 187500, outputTokens: 37500, cost: 0.4 }, summarize: { count: 5, failed: 0, inputTokens: 150000, outputTokens: 15000, cost: 0.9 } }, byModel: [{ modelId: 'gemini-3.5-flash-lite', count: 75, failed: 2, inputTokens: 187500, outputTokens: 37500, cost: 0.4 }] }] });
-  if (p === '/api/dev/usage/minutes') return send(res, 200, { items: [{ user: { id: 'u2', name: '佐藤 花子', departments: ['営業部'], status: 'active' }, recordings: 18, recordedSec: 52320, transcribe: { first: 18, retry: 2 }, summarize: { first: 18, retry: 5 }, failed: 1, transcribedSec: 60000, inputTokens: 100, outputTokens: 50, cost: 2.31, lastUsedAt: new Date().toISOString() }, { user: { id: 'u1', name: '山田 管理', departments: ['営業部'], status: 'active' }, recordings: 3, recordedSec: 7800, transcribe: { first: 3, retry: 0 }, summarize: { first: 3, retry: 0 }, failed: 0, transcribedSec: 7800, inputTokens: 10, outputTokens: 5, cost: 0.36, lastUsedAt: new Date().toISOString() }], total: { recordings: 21, recordedSec: 60120, transcribe: { first: 21, retry: 2 }, summarize: { first: 21, retry: 5 }, failed: 1, cost: 2.67 } });
+  if (p === '/api/dev/usage/minutes') return send(res, 200, { items: [{ user: { id: 'u2', name: '佐藤 花子', departments: ['営業部'], status: 'active' }, recordings: 18, recordedSec: 52320, transcribe: { first: 18, retry: 2 }, summarize: { first: 18, retry: 5 }, qa: { count: 42 }, failed: 1, transcribedSec: 60000, inputTokens: 100, outputTokens: 50, cost: 2.31, lastUsedAt: new Date().toISOString() }, { user: { id: 'u1', name: '山田 管理', departments: ['営業部'], status: 'active' }, recordings: 3, recordedSec: 7800, transcribe: { first: 3, retry: 0 }, summarize: { first: 3, retry: 0 }, qa: { count: 7 }, failed: 0, transcribedSec: 7800, inputTokens: 10, outputTokens: 5, cost: 0.36, lastUsedAt: new Date().toISOString() }], total: { recordings: 21, recordedSec: 60120, transcribe: { first: 21, retry: 2 }, summarize: { first: 21, retry: 5 }, qa: { count: 49 }, failed: 1, cost: 2.67 } });
   if (p.startsWith('/api/dev/usage/minutes/')) return send(res, 200, { months: [{ month: '2026-09', recordedSec: 3600, transcribeCount: 3, cost: 0.5 }], events: [{ at: new Date().toISOString(), kind: 'transcribe', durationSec: 4320, modelId: 'gemini-3.5-flash-lite', ok: true, inputTokens: 144300, outputTokens: 27900, cost: 0.3 }] });
   if (p === '/api/dev/audit') return send(res, 200, { items: [{ at: new Date().toISOString(), actor: { name: '山田 管理' }, action: 'key.update', detail: { provider: 'gemini' } }], nextCursor: null });
   if (p === '/api/dev/positions') return err(res, 404, 'not_found', 'なし');

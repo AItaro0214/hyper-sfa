@@ -5,7 +5,7 @@ import { decryptSecret, encryptSecret } from './crypto.js';
 import { safeJson, nowIso } from './time.js';
 
 export const PROVIDERS = ['gemini', 'openai'];
-export const USES = ['card', 'transcribe', 'summarize'];
+export const USES = ['card', 'transcribe', 'summarize', 'qa'];
 // プロンプトだけが持つ種類（モデルの用途ではない。資料の目次化と、資料を踏まえた議事録は「議事録」用のモデルを使う）
 export const PROMPT_KINDS = [...USES, 'outline', 'summarize_materials'];
 
@@ -73,9 +73,33 @@ export function rowToModel(r) {
 // core の初期一覧のうち、models 表に無いものを足す（設計書: 一覧はコードに固定せず設定として持つ）。
 // 表が空のときだけでなく毎回確かめるのは、初期一覧に後から足したモデル（大型モデルなど）が運用中の環境にも出るようにするため。
 // 既にある行は触らない（単価や有効 / 無効は開発コンソールで変えられる）。説明の項目は rowToModel が初期一覧から補う
+// 初期一覧に後から足した用途。既にある初期モデルにも 1 回だけ足す（settings の models:uses_version で 1 回に限る。
+// 用途は開発コンソールで外せるので、毎回足し直すと外した用途が戻ってしまう）。用途を足したらここの版を上げる
+const USES_VERSION = 2;
+const ADDED_USES = { 2: ['qa'] };
+
+async function addNewUses(env) {
+  const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind('models:uses_version').first();
+  const from = Number(row?.value ?? 1);
+  if (from >= USES_VERSION) return;
+  const { results } = await env.DB.prepare('SELECT id, uses FROM models WHERE builtin = 1').all();
+  const stmts = [];
+  for (const r of results) {
+    const def = DEFAULT_MODELS.find((m) => m.id === r.id);
+    if (!def) continue;
+    const uses = new Set(safeJson(r.uses, []));
+    const before = uses.size;
+    for (let v = from + 1; v <= USES_VERSION; v++) for (const u of ADDED_USES[v] ?? []) if ((def.uses ?? []).includes(u)) uses.add(u);
+    if (uses.size !== before) stmts.push(env.DB.prepare('UPDATE models SET uses = ? WHERE id = ?').bind(JSON.stringify([...uses]), r.id));
+  }
+  stmts.push(env.DB.prepare('INSERT INTO settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at').bind('models:uses_version', String(USES_VERSION), 'system', nowIso()));
+  await env.DB.batch(stmts);
+}
+
 export async function ensureModels(env) {
   const { results } = await env.DB.prepare('SELECT id FROM models').all();
   const have = new Set(results.map((r) => r.id));
+  await addNewUses(env);
   const missing = DEFAULT_MODELS.filter((m) => !have.has(m.id));
   if (missing.length === 0) return;
   const stmt = env.DB.prepare(

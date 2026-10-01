@@ -11,6 +11,7 @@ const USES = [
   ['card', '名刺の読み取り', '1 枚', { inputTokens: 2500, outputTokens: 500 }, '入力 2,500 / 出力 500 トークン'],
   ['transcribe', '文字起こし', '1 時間', { inputTokens: 0, outputTokens: 0, audioSeconds: 3600 }, '音声 1 時間'],
   ['summarize', '議事録', '1 回', { inputTokens: 30000, outputTokens: 3000 }, '入力 3 万 / 出力 3 千トークン'],
+  ['qa', '質問', '1 回', { inputTokens: 50000, outputTokens: 1000 }, '入力 5 万 / 出力 1 千トークン'],
 ];
 const PROVIDERS = [['gemini', 'Gemini'], ['openai', 'OpenAI']];
 const TIER_LABEL = { lite: '安い', standard: '標準', high: '高性能', top: '最上位' };

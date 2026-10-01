@@ -5,7 +5,7 @@ import { esc, toast, confirmDialog, formatDateTime, errorMessage } from '../../u
 import { prepareImages, uploadImages } from '../../imageUtil.js';
 import { settingsNav } from '../settingsNav.js';
 
-const KINDS = [['card', '名刺の読み取り'], ['transcribe', '文字起こし'], ['summarize', '議事録の作成']];
+const KINDS = [['card', '名刺の読み取り'], ['transcribe', '文字起こし'], ['summarize', '議事録の作成'], ['qa', '質問']];
 
 export async function renderDevPrompts(container, _p, query) {
   const page = document.createElement('div');

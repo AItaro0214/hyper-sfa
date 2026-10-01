@@ -3,7 +3,7 @@
 // 新しいモデルが毎月のように出るので、コードを直して配り直さずに済むようにするため。
 // 単価は 100 万トークンあたり USD（perMinute は音声 1 分あたり）。2026-09-30 に公式の料金ページで確認した値。
 
-const ALL_USES = ['card', 'transcribe', 'summarize'];
+const ALL_USES = ['card', 'transcribe', 'summarize', 'qa'];
 
 // 2027-01-01 から単価が 2 倍になる予定の Flash 系
 const FLASH_PRICING = {
@@ -67,13 +67,13 @@ const openaiTranscribe = (id, label, pricing) => ({
   active: true,
 });
 
-// OpenAI の文章モデルは要約だけに使う。名刺の読み取りと文字起こしは行わないため。
+// OpenAI の文章モデルは要約と質問に使う。名刺の読み取りと文字起こしは行わないため。
 // reasoningEffort は要約の呼び出し（reasoningEffort: model.reasoningEffort）がそのまま受ける
 const openaiText = (id, label, pricing, note = '') => ({
   id,
   provider: 'openai',
   label,
-  uses: ['summarize'],
+  uses: ['summarize', 'qa'],
   pricing,
   thinkingLevel: null,
   reasoningEffort: 'medium',
@@ -113,14 +113,14 @@ export const DEFAULT_MODELS = Object.freeze([
     'Gemini 3.1 Pro（プレビュー）',
     { input: 2.0, output: 12.0, longContext: { threshold: 200000, input: 4.0, output: 18.0 } },
     'low',
-    { uses: ['card', 'summarize'], status: 'preview', note: 'プレビュー版。仕様や単価が変わることがある' },
+    { uses: ['card', 'summarize', 'qa'], status: 'preview', note: 'プレビュー版。仕様や単価が変わることがある' },
   ),
   gemini(
     'gemini-2.5-pro',
     'Gemini 2.5 Pro',
     { input: 1.25, output: 10.0, longContext: { threshold: 200000, input: 2.5, output: 15.0 } },
     'low',
-    { uses: ['card', 'summarize'], note: '安定版の Pro。200k トークン超は単価が上がる' },
+    { uses: ['card', 'summarize', 'qa'], note: '安定版の Pro。200k トークン超は単価が上がる' },
   ),
   openaiTranscribe('gpt-transcribe', 'GPT Transcribe', { perMinute: 0.0045 }),
   openaiTranscribe('gpt-4o-transcribe', 'GPT-4o Transcribe', { input: 2.5, output: 10 }),
@@ -158,6 +158,8 @@ export const DEFAULT_SELECTION = Object.freeze({
   card: 'gemini-3.5-flash-lite',
   transcribe: 'gemini-3.5-flash-lite',
   summarize: 'gemini-3.6-flash',
+  // 質問は議事録と同じモデルから始める（minutes-design.md §16.1）
+  qa: 'gemini-3.6-flash',
 });
 
 // Gemini は音声を 1 秒 32 トークンで数える（docs/cost-estimate.md §11.1）

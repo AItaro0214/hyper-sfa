@@ -75,8 +75,8 @@ function readModelInput(check, body, { partial }) {
   const has = (k) => body[k] !== undefined;
   if (!partial || has('label')) out.label = check.str(body.label, 'label', { required: true, max: 100, label: '表示名' });
   if (!partial || has('uses')) {
-    const uses = check.strList(body.uses, 'uses', { maxItems: 3, maxLen: 20, label: '用途' });
-    if (!uses.length || !uses.every((u) => USES.includes(u))) check.fail('uses', '用途は card / transcribe / summarize から選んでください');
+    const uses = check.strList(body.uses, 'uses', { maxItems: 4, maxLen: 20, label: '用途' });
+    if (!uses.length || !uses.every((u) => USES.includes(u))) check.fail('uses', '用途は card / transcribe / summarize / qa から選んでください');
     out.uses = uses;
   }
   if (!partial || has('pricing')) {
@@ -129,12 +129,18 @@ async function minutesUsage(env, q) {
   const byUser = new Map();
   for (const r of rows.results) {
     const u = byUser.get(r.user_id) ?? {
-      recordings: 0, recordedSec: 0, transcribe: { first: 0, retry: 0 }, summarize: { first: 0, retry: 0 },
+      recordings: 0, recordedSec: 0, transcribe: { first: 0, retry: 0 }, summarize: { first: 0, retry: 0 }, qa: { count: 0 },
       failed: 0, transcribedSec: 0, inputTokens: 0, outputTokens: 0, cost: 0, lastUsedAt: null,
     };
     if (r.kind === 'recording') {
       u.recordings += r.count;
       u.recordedSec += r.seconds;
+    } else if (r.kind === 'qa') {
+      u.qa.count += r.count;
+      u.failed += r.failed;
+      u.inputTokens += r.input_tokens;
+      u.outputTokens += r.output_tokens;
+      u.cost += r.cost;
     } else {
       const [use, retry] = r.kind.endsWith('_retry') ? [r.kind.replace('_retry', ''), 'retry'] : [r.kind, 'first'];
       u[use][retry] += r.count;
@@ -148,12 +154,12 @@ async function minutesUsage(env, q) {
     byUser.set(r.user_id, u);
   }
   const empty = () => ({
-    recordings: 0, recordedSec: 0, transcribe: { first: 0, retry: 0 }, summarize: { first: 0, retry: 0 },
+    recordings: 0, recordedSec: 0, transcribe: { first: 0, retry: 0 }, summarize: { first: 0, retry: 0 }, qa: { count: 0 },
     failed: 0, transcribedSec: 0, inputTokens: 0, outputTokens: 0, cost: 0, lastUsedAt: null,
   });
   const includeUnused = q.includeUnused === 'true' || q.includeUnused === '1';
   const items = [];
-  const total = { ...empty(), transcribe: { first: 0, retry: 0 }, summarize: { first: 0, retry: 0 } };
+  const total = { ...empty(), transcribe: { first: 0, retry: 0 }, summarize: { first: 0, retry: 0 }, qa: { count: 0 } };
   for (const u of users.results) {
     const usage = byUser.get(u.id);
     if (!usage && !includeUnused) continue;
@@ -162,6 +168,7 @@ async function minutesUsage(env, q) {
     total.recordings += item.recordings;
     total.recordedSec += item.recordedSec;
     for (const use of ['transcribe', 'summarize']) for (const k of ['first', 'retry']) total[use][k] += item[use][k];
+    total.qa.count += item.qa.count;
     for (const k of ['failed', 'transcribedSec', 'inputTokens', 'outputTokens', 'cost']) total[k] += item[k];
   }
   items.sort((a, b) => b.recordedSec - a.recordedSec);

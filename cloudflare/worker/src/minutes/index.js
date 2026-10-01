@@ -9,6 +9,7 @@ import { buildListQuery, encodeCursor, chunk } from './sql.js';
 import { planStart } from './rules.js';
 import { sign, verify } from './signing.js';
 import { materialsRoutes } from './materials.js';
+import { chatRoutes } from './chat.js';
 
 const AUDIO_KEEP_MS = 7 * 24 * 3600 * 1000;
 const SEGMENT_MAX_BYTES = 10 * 1024 * 1024; // 契約 §9
@@ -149,6 +150,7 @@ async function deleteByPrefix(bucket, prefix) {
 
 export function minutesRoutes(app) {
   materialsRoutes(app);
+  chatRoutes(app);
   // ---- 作る・録音 ----
   app.post('/api/minutes', async (c) => {
     const user = c.get('user');
@@ -539,6 +541,8 @@ export function minutesRoutes(app) {
       .bind(nowIso(), nowIso(), id)
       .run();
     await c.env.DB.prepare('DELETE FROM minute_materials WHERE minute_id = ?').bind(id).run();
+    // 質問のスレッドは全員分を消す（minutes-design.md §16.1）
+    await c.env.DB.prepare('DELETE FROM minute_chats WHERE minute_id = ?').bind(id).run();
     await deleteByPrefix(c.env.AUDIO, `minutes/${id}/`);
     await deleteByPrefix(c.env.DATA, `minutes/${id}/`);
     await audit(c.env, user.id, 'minutes.delete', { minuteId: id });

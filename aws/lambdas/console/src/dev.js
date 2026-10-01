@@ -10,7 +10,7 @@ import { me, listUserItems, emailOf } from './common.js';
 
 const { DEFAULT_MODELS, LEVELS, levelFor, normalizeText, ulid } = core;
 const PROVIDERS = ['gemini', 'openai'];
-const KINDS = ['card', 'transcribe', 'summarize'];
+const KINDS = ['card', 'transcribe', 'summarize', 'qa'];
 const PROMPT_MAX = 20_000;
 const TEST_TTL_SEC = 24 * 3600;
 
@@ -64,13 +64,13 @@ async function updateGeminiSetting(fn) {
 }
 
 async function settingsBody() {
-  const [gemini, openai, models, card, transcribe, summarize] = await Promise.all([
-    getKeyMeta('gemini'), getKeyMeta('openai'), getSelection(), getPrompt('card'), getPrompt('transcribe'), getPrompt('summarize'),
+  const [gemini, openai, models, card, transcribe, summarize, qa] = await Promise.all([
+    getKeyMeta('gemini'), getKeyMeta('openai'), getSelection(), getPrompt('card'), getPrompt('transcribe'), getPrompt('summarize'), getPrompt('qa'),
   ]);
   return {
     keys: { gemini, openai },
-    models: { card: models.card, transcribe: models.transcribe, summarize: models.summarize },
-    prompts: { card: { version: card.version }, transcribe: { version: transcribe.version }, summarize: { version: summarize.version } },
+    models: { card: models.card, transcribe: models.transcribe, summarize: models.summarize, qa: models.qa },
+    prompts: { card: { version: card.version }, transcribe: { version: transcribe.version }, summarize: { version: summarize.version }, qa: { version: qa.version } },
   };
 }
 
@@ -95,6 +95,10 @@ const presentModel = (m) => ({
 // 初期一覧（core の DEFAULT_MODELS）で、後から足した説明の項目。既に DynamoDB にある初期モデルにはこれだけを補う。
 // 単価・有効 / 無効・用途は開発コンソールで変えられるので、上書きしない
 const META_KEYS = ['label', 'tier', 'status', 'note'];
+// 初期一覧に後から足した用途。既に DynamoDB にある初期モデルにも 1 回だけ足す（usesVersion で 1 回に限る。
+// 用途は開発コンソールで外せるので、毎回足し直すと外した用途が戻ってしまう）。用途を足したらここの版を上げる
+const USES_VERSION = 2;
+const ADDED_USES = { 2: ['qa'] };
 
 /** core の初期一覧を DynamoDB に揃える。無いモデルは足し、ある初期モデルには説明の項目だけ補う。以後は開発コンソールで変えられる（§5.2）。 */
 async function listModels() {
@@ -111,6 +115,14 @@ async function listModels() {
     }
     const patch = {};
     for (const k of META_KEYS) if (cur[k] == null && m[k] != null) patch[k] = m[k];
+    if ((cur.usesVersion ?? 1) < USES_VERSION) {
+      const uses = new Set(cur.uses ?? []);
+      for (let v = (cur.usesVersion ?? 1) + 1; v <= USES_VERSION; v++) {
+        for (const u of ADDED_USES[v] ?? []) if ((m.uses ?? []).includes(u)) uses.add(u);
+      }
+      patch.uses = [...uses];
+      patch.usesVersion = USES_VERSION;
+    }
     if (Object.keys(patch).length) writes.push(ddb.update('ORG', `MODEL#${m.id}`, { set: patch }).catch(() => {}));
   }
   if (writes.length) {
@@ -154,7 +166,7 @@ function cleanModelFields(b, errors, { partial }) {
     else out.label = b.label.trim();
   }
   if (!partial || has('uses')) {
-    if (!Array.isArray(b.uses) || b.uses.length === 0 || b.uses.some((u) => !KINDS.includes(u))) errors.push({ field: 'uses', message: 'card / transcribe / summarize から選んでください' });
+    if (!Array.isArray(b.uses) || b.uses.length === 0 || b.uses.some((u) => !KINDS.includes(u))) errors.push({ field: 'uses', message: 'card / transcribe / summarize / qa から選んでください' });
     else out.uses = [...new Set(b.uses)];
   }
   if (!partial || has('pricing')) out.pricing = cleanPricing(b.pricing, errors);

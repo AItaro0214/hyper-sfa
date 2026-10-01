@@ -61,6 +61,28 @@ export function buildGenerateRequest({ model, apiKey, prompt, parts = [], schema
   };
 }
 
+/**
+ * 会話（質問への答え）用の generateContent。systemText はシステム指示、turns は過去のやり取り（最後が今回の質問）。
+ * Gemini の role は user / model なので、assistant を model に写す。
+ * @param {Array<{role: 'user' | 'assistant', text: string}>} o.turns
+ */
+export function buildChatGenerateRequest({ model, apiKey, systemText, turns = [], thinkingLevel, maxOutputTokens }) {
+  const generationConfig = {};
+  if (thinkingLevel) generationConfig.thinkingConfig = { thinkingLevel: String(thinkingLevel).toUpperCase() };
+  if (maxOutputTokens) generationConfig.maxOutputTokens = maxOutputTokens;
+  const body = {
+    systemInstruction: { parts: [{ text: String(systemText ?? '') }] },
+    contents: turns.map((t) => ({ role: t.role === 'assistant' || t.role === 'model' ? 'model' : 'user', parts: [{ text: String(t.text ?? '') }] })),
+    generationConfig,
+  };
+  return {
+    url: `${BASE}/v1beta/models/${modelPath(model)}:generateContent`,
+    method: 'POST',
+    headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  };
+}
+
 // 応答が拒否されたことを示す finishReason
 const BLOCKED_FINISH = new Set(['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'IMAGE_SAFETY', 'RECITATION']);
 

@@ -32,7 +32,7 @@ async function usageByMonth(month) {
   return { month, byUse, byModel };
 }
 
-const MINUTES_SUMS = ['recordings', 'recordedSec', 'transcribeFirst', 'transcribeRetry', 'summarizeFirst', 'summarizeRetry', 'failed', 'transcribedSec', 'inputTokens', 'outputTokens', 'cost'];
+const MINUTES_SUMS = ['recordings', 'recordedSec', 'transcribeFirst', 'transcribeRetry', 'summarizeFirst', 'summarizeRetry', 'failed', 'transcribedSec', 'qa', 'inputTokens', 'outputTokens', 'cost'];
 const emptyMinutes = () => Object.fromEntries(MINUTES_SUMS.map((f) => [f, 0]));
 
 async function minutesUsage({ from, to, dept, includeUnused }) {
@@ -72,6 +72,7 @@ async function minutesUsage({ from, to, dept, includeUnused }) {
       recordedSec: a.recordedSec,
       transcribe: { first: a.transcribeFirst, retry: a.transcribeRetry },
       summarize: { first: a.summarizeFirst, retry: a.summarizeRetry },
+      qa: { count: a.qa },
       failed: a.failed,
       transcribedSec: a.transcribedSec,
       inputTokens: a.inputTokens,

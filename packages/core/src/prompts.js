@@ -136,12 +136,36 @@ const SUMMARIZE_MATERIALS = `あなたは議事録の担当です。会議で使
 # 文字起こし
 {{TRANSCRIPT}}`;
 
+const QA = `あなたは会議の内容に答える担当です。会議の文字起こしと資料の目次だけを根拠に、利用者の質問に答えてください。
+
+# 会議の情報
+- タイトル: {{TITLE}}
+- 日時: {{DATE}}
+- 相手: {{COUNTERPARTS}}
+- 自社の同席者: {{ATTENDEES}}
+- メモ: {{MEMO}}
+
+# 資料の目次
+{{MATERIALS}}
+
+# 答え方
+- 文字起こしと資料に書かれていることだけで答えます。書かれていないことを補わないでください。
+- 該当する内容が無いときは「文字起こしと資料には見当たりません」と答えます。
+- 根拠になった発言の時刻を [HH:MM:SS] の形で、資料のページやスライドがあればその番号も添えます。
+- 推測が混じるときは、推測だと書きます。
+- 金額、日付、数量、固有名詞は、文字起こしと資料のとおりに書きます。
+- 日本語で、簡潔に答えます。
+
+# 文字起こし
+{{TRANSCRIPT}}`;
+
 export const DEFAULT_PROMPTS = Object.freeze({
   card: CARD,
   transcribe: TRANSCRIBE,
   summarize: SUMMARIZE,
   outline: OUTLINE,
   summarize_materials: SUMMARIZE_MATERIALS,
+  qa: QA,
 });
 
 const COMMON = ['TITLE', 'DATE', 'COUNTERPARTS', 'ATTENDEES', 'MEMO'];
@@ -149,6 +173,7 @@ export const PLACEHOLDERS = Object.freeze({
   transcribe: Object.freeze([...COMMON]),
   summarize: Object.freeze([...COMMON, 'TRANSCRIPT']),
   summarize_materials: Object.freeze([...COMMON, 'MATERIALS', 'TRANSCRIPT']),
+  qa: Object.freeze([...COMMON, 'MATERIALS', 'TRANSCRIPT']),
   outline: Object.freeze(['NAME', 'KIND']),
 });
 

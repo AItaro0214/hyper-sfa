@@ -61,6 +61,8 @@ locals {
       COGNITO_DOMAIN        = local.cognito_domain_url
       COGNITO_CLIENT_ID     = aws_cognito_user_pool_client.web.id
       APP_ORIGIN            = local.app_origin
+      # 議事録への質問（minutes-design.md §16）で Gemini / OpenAI を app から直接呼ぶため
+      API_KEYS_SECRET_ARN = aws_secretsmanager_secret.api_keys.arn
     })
     console = merge(local.env_base, {
       API_KEYS_SECRET_ARN   = aws_secretsmanager_secret.api_keys.arn
@@ -450,7 +452,7 @@ resource "aws_iam_role_policy" "logs" {
 }
 
 # Lambda ごとの権限（docs/design.md §9.5、docs/minutes-design.md §11）。
-# 分けているのは権限を絞るため。API キーを読めるのは console / scan / minutes だけ、書けるのは console だけ。
+# 分けているのは権限を絞るため。API キーを読めるのは console / scan / minutes / app（質問用）だけ、書けるのは console だけ。
 data "aws_iam_policy_document" "app" {
   statement {
     sid       = "Dynamo"
@@ -478,6 +480,13 @@ data "aws_iam_policy_document" "app" {
     sid       = "InvokeWorkers"
     actions   = ["lambda:InvokeFunction"]
     resources = [local.fn_arn["scan"], local.fn_arn["minutes"]]
+  }
+  # 議事録への質問（minutes-design.md §16）は、30 秒の API Gateway の中で答えを返す同期の処理。
+  # 別の Lambda を呼ぶと待ちが増えるので、app が API キーを読んでモデルを直接呼ぶ。読み取りだけ（書き込みは console のみ）
+  statement {
+    sid       = "ApiKeysRead"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.api_keys.arn]
   }
 }
 

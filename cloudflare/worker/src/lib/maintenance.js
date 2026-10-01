@@ -9,6 +9,7 @@ export async function housekeeping(env) {
     env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR absolute_expires_at < ?').bind(now, now),
     env.DB.prepare('DELETE FROM login_attempts WHERE at < ?').bind(addDays(now, -1)),
     env.DB.prepare('DELETE FROM scan_quota WHERE day < ?').bind(addDays(now, -3).slice(0, 10)),
+    env.DB.prepare('DELETE FROM qa_quota WHERE day < ?').bind(addDays(now, -3).slice(0, 10)),
   ]);
 
   // 論理削除から 30 日たった名刺を、画像と履歴ごと消す

@@ -21,6 +21,7 @@ export {
 } from './openai.js';
 export * from './materials.js';
 export * from './transcript.js';
+export * from './qa.js';
 export * from './csv.js';
 export * from './userImport.js';
 export * from './permissions.js';

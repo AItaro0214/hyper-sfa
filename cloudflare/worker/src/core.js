@@ -5,7 +5,9 @@ export * as gemini from '../../../packages/core/src/gemini.js';
 export * as openai from '../../../packages/core/src/openai.js';
 export { extractJson, normalizeCard, isEmptyCard, CARD_RESPONSE_SCHEMA, JsonExtractError } from '../../../packages/core/src/json.js';
 export { normalizeText, phoneDigits, searchKeys, parseQuery } from '../../../packages/core/src/search.js';
-export { DEFAULT_PROMPTS } from '../../../packages/core/src/prompts.js';
+export { DEFAULT_PROMPTS, renderPrompt } from '../../../packages/core/src/prompts.js';
+export { outlineFromExtract } from '../../../packages/core/src/materials.js';
+export { buildQaContext, trimTurns } from '../../../packages/core/src/qa.js';
 export { DEFAULT_MODELS, DEFAULT_SELECTION, estimateCost } from '../../../packages/core/src/models.js';
 export {
   buildCsv,

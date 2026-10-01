@@ -52,7 +52,7 @@ function presentMaterial(m) {
   };
 }
 
-async function loadMaterials(id, { all = false } = {}) {
+export async function loadMaterials(id, { all = false } = {}) {
   const items = await ddb.queryAll({ pk: K.minute(id).pk, skPrefix: 'MAT#' });
   return items.filter((m) => all || m.state === 'ready').sort((a, b) => a.seq - b.seq);
 }
@@ -144,7 +144,7 @@ async function loadMeta(id) {
 }
 
 /** 見られる人か。owner / shared。見られなければ 404。 */
-async function access(user, id) {
+export async function access(user, id) {
   const meta = await loadMeta(id);
   if (meta.ownerEmail === user.id) return { meta, relation: 'owner' };
   const k = K.minuteShare(meta.id, user.id);
@@ -643,7 +643,10 @@ export function registerMinutesRoutes(app) {
     const shares = await shareItems(meta.id);
     const segs = await ddb.queryAll({ pk: meta.pk, skPrefix: 'SEG#' });
     const mats = await loadMaterials(meta.id, { all: true });
+    // 質問のスレッドは全員分を消す（minutes-design.md §16.1）
+    const chats = await ddb.queryAll({ pk: meta.pk, skPrefix: 'CHAT#' });
     const keys = [
+      ...chats.map((s) => ({ pk: s.pk, sk: s.sk })),
       K.minute(meta.id),
       ...segs.map((s) => ({ pk: s.pk, sk: s.sk })),
       ...mats.map((m) => ({ pk: m.pk, sk: m.sk })),

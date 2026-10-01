@@ -7,6 +7,7 @@
 //   cost:     USD。無ければ、モデルの単価から概算する
 //   kind:     'card' | 'transcribe' | 'summarize' | 'test' | 'recording'
 //   'recording' は録音を終えたときに app が記録する（audioSeconds に録音時間）
+//   'qa' は議事録への質問（1 往復 1 件。app が記録する。用途ごとの合計とユーザーごとの合計に入る）
 //
 // DynamoDB の項目:
 //   USAGE#<月> / USE#<kind>#<モデルID>         用途ごと・モデルごとの合計
@@ -17,7 +18,7 @@ import { ddb } from './ddb.js';
 import { K } from './keys.js';
 
 const LOG_TTL_SEC = 2 * 365 * 24 * 3600;
-const MINUTES_KINDS = new Set(['transcribe', 'summarize', 'recording']);
+const MINUTES_KINDS = new Set(['transcribe', 'summarize', 'recording', 'qa']);
 
 async function costOf(evt) {
   if (typeof evt.cost === 'number') return evt.cost;
@@ -64,6 +65,8 @@ export async function recordUsage(evt) {
     if (kind === 'recording') {
       add.recordings = 1;
       add.recordedSec = audioSeconds;
+    } else if (kind === 'qa') {
+      add.qa = 1;
     } else if (kind === 'transcribe') {
       add[evt.retry ? 'transcribeRetry' : 'transcribeFirst'] = 1;
       add.transcribedSec = audioSeconds;

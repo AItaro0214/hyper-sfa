@@ -16,3 +16,4 @@ terraform.tfvars
 Thumbs.db
 aws/lambdas/*/build/
 coverage/
+web/dev/samples/

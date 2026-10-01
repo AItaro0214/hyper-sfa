@@ -20,6 +20,14 @@ test('パスワードのハッシュを検証できる（pepper あり）', asyn
   assert.ok(!(await verifyPassword('wrong password!!', h, 'pepper-1')));
 });
 
+test('users 表の行（password_hash）をそのまま渡しても検証できる', async () => {
+  const h = await hashPassword('correct horse battery', opts);
+  const row = { password_hash: h.hash, salt: h.salt, iterations: h.iterations, login_id: 'admin' };
+  assert.ok(await verifyPassword('correct horse battery', row, 'pepper-1'));
+  assert.ok(!(await verifyPassword('wrong', row, 'pepper-1')));
+  assert.ok(!(await verifyPassword('correct horse battery', { salt: h.salt, iterations: 1000 }, 'pepper-1')));
+});
+
 test('pepper が違えば通らない', async () => {
   const h = await hashPassword('correct horse battery', opts);
   assert.ok(!(await verifyPassword('correct horse battery', h, 'pepper-2')));

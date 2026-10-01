@@ -92,3 +92,78 @@ export function classifyOpenAIError({ status, json } = {}) {
   if (status === 408 || status === 504 || (status >= 500 && status < 600)) return { kind: 'provider', retryable: true, message };
   return { kind: 'provider', retryable: false, message };
 }
+
+// ---- Files API と Responses API（資料の PDF を渡すとき用。docs/core-api.md §14） ----
+// 実機で確かめる点:
+//   - /v1/responses の input の形（role: 'user' の content に input_text / input_file を並べる）と file_id のキー名
+//   - text.format の json_schema（strict: false）を gpt-6 系が受けるか
+//   - purpose 'user_data' の PDF を input_file で読めるか、1 ファイル・1 リクエストの上限
+
+/**
+ * /v1/files の multipart。ファイル本体は大きいので、呼び出し側が prefix + ファイル + suffix の順でストリームに流す。
+ * filename は `"` と改行だけ除く（ヘッダーを壊されないため）。UTF-8 のまま入れる。
+ */
+export function buildOpenAIFileUploadRequest({ apiKey, filename, contentType = 'application/octet-stream', purpose = 'user_data', boundary }) {
+  const b = boundary ?? `----hypersfa${(globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2)).replace(/-/g, '')}`;
+  const safeName = String(filename ?? 'file').replace(/["\r\n]/g, '');
+  const enc = new TextEncoder();
+  const prefix = enc.encode(
+    `--${b}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\n${purpose}\r\n` +
+      `--${b}\r\nContent-Disposition: form-data; name="file"; filename="${safeName}"\r\nContent-Type: ${contentType}\r\n\r\n`,
+  );
+  const suffix = enc.encode(`\r\n--${b}--\r\n`);
+  return {
+    url: `${BASE}/v1/files`,
+    method: 'POST',
+    headers: { ...auth(apiKey), 'Content-Type': `multipart/form-data; boundary=${b}` },
+    boundary: b,
+    prefix,
+    suffix,
+  };
+}
+
+export function parseOpenAIFileResponse(json) {
+  return { id: json?.id ?? null, bytes: json?.bytes ?? 0 };
+}
+
+/** 預けた資料は、目次を作り終えたらすぐ消す（OpenAI 側に残さないため）。 */
+export function buildOpenAIFileDeleteRequest({ apiKey, fileId }) {
+  return { url: `${BASE}/v1/files/${encodeURIComponent(fileId)}`, method: 'DELETE', headers: auth(apiKey) };
+}
+
+/**
+ * /v1/responses。parts: [{ type: 'input_text', text } | { type: 'input_file', fileId }]。
+ */
+export function buildResponsesRequest({ model, apiKey, instructions, parts = [], jsonSchema, schemaName = 'result', maxOutputTokens, reasoningEffort }) {
+  const content = parts.map((p) => (p.type === 'input_file' ? { type: 'input_file', file_id: p.fileId } : { type: 'input_text', text: p.text }));
+  const body = { model, input: [{ role: 'user', content }] };
+  if (instructions) body.instructions = instructions;
+  if (jsonSchema) body.text = { format: { type: 'json_schema', name: schemaName, schema: jsonSchema, strict: false } };
+  if (maxOutputTokens) body.max_output_tokens = maxOutputTokens;
+  if (reasoningEffort) body.reasoning = { effort: reasoningEffort };
+  return { url: `${BASE}/v1/responses`, method: 'POST', headers: { ...auth(apiKey), 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+}
+
+/**
+ * 本文は output[] の message の content[] のうち output_text を連結する。
+ * status が incomplete のときは finishReason に理由（max_output_tokens など）を入れ、incomplete も true にする。
+ */
+export function parseResponsesResponse(json) {
+  const text = (json?.output ?? [])
+    .flatMap((o) => (Array.isArray(o?.content) ? o.content : []))
+    .filter((c) => c?.type === 'output_text' && typeof c.text === 'string')
+    .map((c) => c.text)
+    .join('');
+  const incomplete = json?.status === 'incomplete';
+  const u = json?.usage ?? {};
+  return {
+    text,
+    finishReason: incomplete ? json?.incomplete_details?.reason ?? 'incomplete' : json?.status ?? null,
+    incomplete,
+    usage: {
+      inputTokens: u.input_tokens ?? 0,
+      outputTokens: u.output_tokens ?? 0,
+      thoughtTokens: u.output_tokens_details?.reasoning_tokens ?? 0,
+    },
+  };
+}

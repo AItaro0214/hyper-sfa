@@ -13,6 +13,26 @@ const BASE = 'https://generativelanguage.googleapis.com';
 const modelPath = (model) => encodeURIComponent(String(model).replace(/^models\//, ''));
 
 /**
+ * スキーマの type を大文字にする（object → OBJECT）。コード側のスキーマは小文字で書くので、Gemini に渡す直前に直す。
+ * 既に大文字のものはそのまま。元のオブジェクトは変更しない。
+ */
+export function toGeminiSchema(schema) {
+  if (Array.isArray(schema)) return schema.map(toGeminiSchema);
+  if (schema && typeof schema === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(schema)) {
+      if (k === 'type' && typeof v === 'string') out[k] = v.toUpperCase();
+      else if (k === 'properties' && v && typeof v === 'object') {
+        // properties のキーに "type" という項目名があっても型指定と取り違えないよう、値だけ変換する
+        out[k] = Object.fromEntries(Object.entries(v).map(([pk, pv]) => [pk, toGeminiSchema(pv)]));
+      } else out[k] = toGeminiSchema(v);
+    }
+    return out;
+  }
+  return schema;
+}
+
+/**
  * generateContent のリクエストを作る。
  * @param {object} o
  * @param {Array<{inlineData?: {mimeType: string, data: string}, fileData?: {mimeType: string, fileUri: string}}>} [o.parts]
@@ -23,7 +43,7 @@ export function buildGenerateRequest({ model, apiKey, prompt, parts = [], schema
   const generationConfig = {};
   if (schema) {
     generationConfig.responseMimeType = 'application/json';
-    generationConfig.responseSchema = schema;
+    generationConfig.responseSchema = toGeminiSchema(schema);
   }
   if (thinkingLevel) generationConfig.thinkingConfig = { thinkingLevel: String(thinkingLevel).toUpperCase() };
   if (maxOutputTokens) generationConfig.maxOutputTokens = maxOutputTokens;

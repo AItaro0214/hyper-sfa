@@ -83,3 +83,9 @@ npm run dev
 
 - Workflow を起動した直後に、ログに `The Workers runtime canceled this request because it detected that your Worker's code had hung` が出ることがある。Workflow 自体は最後まで進み、結果も D1 に書かれている。ローカルの Workflows の模擬に由来するものと見ているが、本番で出ないことは未確認。
 - `curl` で日本語を送るときは、シェルの文字コード（Windows の Git Bash は cp932）に注意する。ファイルに UTF-8 で書いて `--data-binary @file` で送る。
+
+## 2026-10-01 の追加
+
+- `migrations/0003_materials.sql`: 資料（`minute_materials`）と `prompts` の `kind` に `outline` / `summarize_materials` を追加。本番に出すときは `npx wrangler d1 migrations apply hyper-sfa --remote`。
+- ログインの不具合を修正: `verifyPassword` に DB の行（`password_hash`）をそのまま渡していて照合が常に失敗していた。`setup` は照合を通らないので気付きにくかった。テストを足した。
+- `prepare-assets.mjs` は `wrangler dev` が動いている間は `.assets` を消せず失敗する。先に止めること。

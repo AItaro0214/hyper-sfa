@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>extract-auto</title>
+</head>
+<body>
+<!-- 自動確認用。?src=/dev/samples/xxx.pptx を fetch して extractMaterial に通し、結果の要約を #out に出す。
+     headless Chrome の --dump-dom で読む想定（ファイル選択の操作が要らない）。 -->
+<pre id="out">running</pre>
+<script type="module">
+  import { extractMaterial } from '/js/materials/extract.js';
+  const out = document.getElementById('out');
+  const src = new URL(location.href).searchParams.get('src');
+  try {
+    const t0 = performance.now();
+    const res = await fetch(src);
+    const blob = await res.blob();
+    const name = src.split('/').pop();
+    const file = new File([blob], decodeURIComponent(name), { type: blob.type });
+    const r = await extractMaterial(file);
+    const json = JSON.stringify(r);
+    const summary = {
+      kind: r.kind,
+      ms: Math.round(performance.now() - t0),
+      bytesIn: blob.size,
+      bytesOut: json.length,
+      truncated: r.truncated || false,
+      slides: r.slides?.length, sheets: r.sheets?.length,
+      charts: (r.slides || r.sheets || []).reduce((n, s) => n + (s.charts?.length || 0), 0),
+      first: (r.slides || r.sheets || []).slice(0, 2).map((s) => ({
+        no: s.no, title: s.title || s.name, text: (s.text || '').slice(0, 120), notes: (s.notes || '').slice(0, 60),
+        rows: s.rows ? s.rows.slice(0, 4) : undefined, charts: s.charts,
+      })),
+    };
+    out.textContent = 'RESULT ' + JSON.stringify(summary);
+  } catch (e) {
+    out.textContent = 'ERROR ' + (e && (e.stack || e.message || String(e)));
+  }
+</script>
+</body>
+</html>

@@ -23,6 +23,7 @@ export function fakeDdb(seed = []) {
 export const K = {
   minute: (id) => ({ pk: `MIN#${id}`, sk: 'META' }),
   minuteSeg: (id, seq) => ({ pk: `MIN#${id}`, sk: `SEG#${seq}` }),
+  minuteMaterial: (id, seq) => ({ pk: `MIN#${id}`, sk: `MAT#${String(seq).padStart(3, '0')}` }),
   setting: (n) => ({ pk: 'ORG', sk: `SETTING#${n}` }),
   model: (id) => ({ pk: 'ORG', sk: `MODEL#${id}` }),
   prompt: (kind, v) => ({ pk: 'ORG', sk: `PROMPT#${kind}#${v}` }),

@@ -154,3 +154,25 @@ body.mn-modal-open { overflow: hidden; }
   .mn-homebar .mn-btn { flex: 1; min-height: 52px; }
   .mn-has-homebar { padding-bottom: 88px; }
 }
+
+/* 資料の欄（minutes-design §15.2） */
+.mn-mat { margin: 16px 0; }
+.mn-mat-head { justify-content: space-between; }
+.mn-mat-head h2 { margin: 0; font-size: 1.05rem; }
+.mn-mat-add { cursor: pointer; }
+.mn-mat-add.is-disabled { opacity: .5; pointer-events: none; }
+.mn-mat-list { list-style: none; margin: 8px 0; padding: 0; }
+.mn-mat-row { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border, #e5e7eb); }
+.mn-mat-name { font-weight: 600; word-break: break-all; }
+.mn-mat-meta { flex: 1 1 auto; }
+.mn-mat-btns { display: flex; gap: 6px; }
+.mn-mat-wait { opacity: .75; }
+.mn-mat-foot { margin-top: 8px; }
+.mn-badge-mat { background: #e0ecff; color: #1d4ed8; }
+.mn-map h3 { font-size: 1rem; margin: 20px 0 6px; }
+.mn-map-scroll { overflow-x: auto; }
+.mn-map .mn-table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+.mn-map .mn-table th, .mn-map .mn-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border, #e5e7eb); }
+.mn-link { border: 0; background: none; padding: 0; font: inherit; color: var(--mn-primary, #2563eb); text-decoration: underline; cursor: pointer; }
+.mn-faint { color: var(--mn-muted); opacity: .8; font-size: .85rem; }
+.mn-flash { background: #fde68a; transition: background 1s; }

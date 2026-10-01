@@ -6,6 +6,9 @@ import {
   buildTranscriptionRequest, parseTranscriptionResponse,
   buildChatRequest, parseChatResponse, classifyOpenAIError,
   offsetTimestamps, joinSegments, usageEvent,
+  extractJson, OUTLINE_SCHEMA, MATERIAL_SUMMARY_SCHEMA, outlineFromExtract, formatMaterialsForPrompt, normalizeMapping,
+  toGeminiSchema, buildOpenAIFileUploadRequest, parseOpenAIFileResponse, buildOpenAIFileDeleteRequest,
+  buildResponsesRequest, parseResponsesResponse,
 } from '@hyper-sfa/core';
 import { runPool } from './pool.js';
 import { ffmpegPath, splitAudio, concatToM4a } from './ffmpeg.js';
@@ -14,6 +17,11 @@ const FETCH_TIMEOUT_MS = 60_000;
 const CONCURRENCY = 4;
 const TRANSCRIBE_MAX_TOKENS = 16000;
 const SUMMARIZE_MAX_TOKENS = 8000;
+const OUTLINE_MAX_TOKENS = 16000;
+const MATERIAL_SUMMARY_MAX_TOKENS = 16000;
+const OUTLINE_CONCURRENCY = 3;
+// Gemini の inlineData はリクエスト全体で 20MB。base64 で 4/3 倍になるので、元のファイルは 14MB までにする
+const GEMINI_INLINE_MAX_BYTES = 14 * 1024 * 1024;
 const TRANSIENT_DELAYS_MS = [2000, 5000];
 const STALE_MS = 20 * 60 * 1000;
 const TEST_TTL_SEC = 24 * 3600;
@@ -27,6 +35,7 @@ const MESSAGES = {
   timeout: '処理が長く止まっていたため、失敗として扱いました',
   no_audio: '音声の区切りがありません',
   no_transcript: '文字起こしがありません',
+  no_materials: '資料がありません',
 };
 
 class MinutesError extends Error {
@@ -35,7 +44,7 @@ class MinutesError extends Error {
     this.kind = kind;
     this.transient = transient;
     // 何度やっても同じ結果になるものには「もう一度試す」を出さない
-    this.retryable = !['not_configured', 'blocked', 'audio_expired', 'no_audio'].includes(kind);
+    this.retryable = !['not_configured', 'blocked', 'audio_expired', 'no_audio', 'no_materials'].includes(kind);
   }
 }
 
@@ -52,7 +61,7 @@ export async function runMinutes(event, deps) {
       console.log('minutes: not found');
       return { ok: false };
     }
-    ctx = { id, target, deps, meta, step: 'transcribe', mirrors: null, tmpDirs: [] };
+    ctx = { id, target, deps, meta, step: 'transcribe', mirrors: null, tmpDirs: [], withMaterials: target === 'summary' && event.withMaterials === true };
 
     // 処理中のまま止まっているものは失敗として扱い、この呼び出しで再開する。
     // 動いている最中なら二重起動なので何もしない。
@@ -115,7 +124,8 @@ async function pipeline(ctx) {
   ctx.step = 'summarize';
   await setMeta(ctx, { status: 'summarizing', step: 'summarize', failure: null });
   await syncMirrors(ctx, 'summarizing');
-  await summarizeStep(ctx, owner, target === 'summary');
+  if (ctx.withMaterials) await summarizeWithMaterials(ctx, owner, true);
+  else await summarizeStep(ctx, owner, target === 'summary');
 
   await setMeta(ctx, { status: 'done', step: null, failure: null });
   await syncMirrors(ctx, 'done');
@@ -305,7 +315,216 @@ async function summarizeStep(ctx, owner, retry) {
     summary: {
       key, version, createdAt: iso(deps), modelId: cfg.model.id, promptVersion: cfg.promptVersion,
       previousKey: meta.summary?.key ?? null,
+      ...materialFields(meta, { withMaterials: false, materialIds: [], mappingKey: null }),
     },
+  });
+}
+
+// revert が本文と一緒に入れ替えられるよう、前の版の資料情報も持つ
+function materialFields(meta, { withMaterials, materialIds, mappingKey }) {
+  const prev = meta.summary ?? {};
+  return {
+    withMaterials, materialIds, mappingKey,
+    previousWithMaterials: Boolean(prev.withMaterials),
+    previousMaterialIds: prev.materialIds ?? [],
+    previousMappingKey: prev.mappingKey ?? null,
+  };
+}
+
+// ---- 資料を踏まえた議事録（§15.4, §15.5） ----
+
+async function summarizeWithMaterials(ctx, owner, retry) {
+  const { deps, id, meta } = ctx;
+  const cfg = await loadConfig(deps, 'summarize', {});
+  const apiKey = await keyFor(deps, cfg.model);
+  const outlinePrompt = await resolvePrompt(deps, 'outline');
+  const summaryPrompt = await resolvePrompt(deps, 'summarize_materials');
+
+  const r = await deps.ddb.query({ pk: deps.K.minute(id).pk, skPrefix: 'MAT#' });
+  const mats = (Array.isArray(r) ? r : (r?.items ?? []))
+    .filter((m) => m.state === 'ready')
+    .sort((a, b) => a.seq - b.seq);
+  if (mats.length === 0) throw new MinutesError('no_materials');
+
+  let transcript = ctx.transcriptText;
+  if (transcript === undefined) {
+    if (!meta.transcript?.key) throw new MinutesError('no_transcript');
+    transcript = Buffer.from(await deps.s3.getObjectBuffer({ bucket: deps.env.DATA_BUCKET, key: meta.transcript.key })).toString('utf8');
+  }
+
+  // 目次化と議事録の利用量は、1 回の「議事録」としてまとめて記録する（§15.5）
+  const acc = { inputTokens: 0, outputTokens: 0 };
+  let text;
+  let mapping;
+  try {
+    await setMeta(ctx, { step: 'outline' });
+    const outlines = await buildOutlines(ctx, { cfg, apiKey, prompt: outlinePrompt.prompt, mats, acc });
+
+    await setMeta(ctx, { step: 'summarize_materials' });
+    const list = mats.map((m) => ({ seq: m.seq, name: m.name, kind: m.kind, outline: outlines.get(m.seq) ?? null }));
+    const vars = { ...promptVars(meta), MATERIALS: formatMaterialsForPrompt(list), TRANSCRIPT: transcript };
+    const out = await summarizeMaterialsText(deps, { cfg, apiKey, prompt: renderPrompt(summaryPrompt.prompt, vars), acc });
+    text = out.markdown;
+    mapping = normalizeMapping(out.mapping, list);
+  } catch (e) {
+    const err = e instanceof MinutesError ? e : new MinutesError('provider');
+    await usage(deps, 'summarize', owner, cfg.model.id, acc, 0, false, err.kind, retry);
+    throw err;
+  }
+  await usage(deps, 'summarize', owner, cfg.model.id, acc, 0, true, null, retry);
+
+  const version = (meta.summary?.version ?? 0) + 1;
+  const key = `minutes/${id}/summary-v${version}.md`;
+  const mappingKey = `minutes/${id}/summary-mapping-v${version}.json`;
+  await deps.s3.putObject({ bucket: deps.env.DATA_BUCKET, key, body: text, contentType: 'text/markdown; charset=utf-8' });
+  await deps.s3.putObject({ bucket: deps.env.DATA_BUCKET, key: mappingKey, body: JSON.stringify(mapping), contentType: 'application/json' });
+  await setMeta(ctx, {
+    summary: {
+      key, version, createdAt: iso(deps), modelId: cfg.model.id, promptVersion: summaryPrompt.promptVersion,
+      previousKey: meta.summary?.key ?? null,
+      ...materialFields(meta, { withMaterials: true, materialIds: mats.map((m) => m.id), mappingKey }),
+    },
+  });
+}
+
+/** 資料ごとの目次。作れなかった資料は null（名前だけをモデルに渡す）。seq → 目次 */
+async function buildOutlines(ctx, { cfg, apiKey, prompt, mats, acc }) {
+  const { deps } = ctx;
+  const out = new Map();
+  const todo = [];
+  for (const m of mats) {
+    if (m.kind === 'pdf') {
+      if (m.outlineStatus === 'done' && m.outlineKey) {
+        out.set(m.seq, await readJsonObject(deps, m.outlineKey));
+      } else {
+        todo.push(m);
+      }
+    } else if (m.extractKey) {
+      // pptx / xlsx はモデルを使わず、ブラウザが抜いた JSON から機械的に作る
+      const extract = await readJsonObject(deps, m.extractKey);
+      out.set(m.seq, extract ? outlineFromExtract(extract, { name: m.name }) : null);
+    } else {
+      out.set(m.seq, null);
+    }
+  }
+  await runPool(todo, OUTLINE_CONCURRENCY, async (m) => {
+    try {
+      const outline = await outlinePdf(deps, { cfg, apiKey, prompt, mat: m, acc });
+      const outlineKey = `minutes/${ctx.id}/materials/${m.id}.outline.json`;
+      await deps.s3.putObject({ bucket: deps.env.DATA_BUCKET, key: outlineKey, body: JSON.stringify(outline), contentType: 'application/json' });
+      await deps.ddb.update(m.pk, m.sk, { set: { outlineStatus: 'done', outlineKey } });
+      out.set(m.seq, outline);
+    } catch (e) {
+      // 目次にできない資料があっても議事録は作る。その資料は名前だけを渡す
+      console.log(`minutes: outline failed kind=${e instanceof MinutesError ? e.kind : 'unexpected'}`);
+      await deps.ddb.update(m.pk, m.sk, { set: { outlineStatus: 'failed' } }).catch(() => {});
+      out.set(m.seq, null);
+    }
+  });
+  return out;
+}
+
+async function readJsonObject(deps, key) {
+  try {
+    const buf = await deps.s3.getObjectBuffer({ bucket: deps.env.DATA_BUCKET, key });
+    return JSON.parse(Buffer.from(buf).toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// PDF 1 件を、モデルに読ませて目次にする。100 ページ超の分割は実機で必要になったときに足す（§15.4）
+async function outlinePdf(deps, { cfg, apiKey, prompt, mat, acc }) {
+  const model = cfg.model;
+  const buf = Buffer.from(await deps.s3.getObjectBuffer({ bucket: deps.env.DATA_BUCKET, key: mat.key }));
+  const text = renderPrompt(prompt, { NAME: mat.name, KIND: mat.kind });
+  const raw = await withRetry(deps, async () => {
+    if (model.provider === 'openai') return outlineViaOpenAI(deps, { model, apiKey, buf, mat, text, acc });
+    if (buf.length >= GEMINI_INLINE_MAX_BYTES) throw new MinutesError('provider', { message: 'PDF が大きすぎます' });
+    const req = buildGenerateRequest({
+      model: model.id, apiKey, prompt: text,
+      parts: [{ inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } }],
+      schema: toGeminiSchema(OUTLINE_SCHEMA), thinkingLevel: model.thinkingLevel, maxOutputTokens: OUTLINE_MAX_TOKENS,
+    });
+    const p = parseGenerateResponse(await post(deps, req, 'gemini'));
+    acc.inputTokens += p.usage?.inputTokens ?? 0;
+    acc.outputTokens += (p.usage?.outputTokens ?? 0) + (p.usage?.thoughtTokens ?? 0);
+    if (p.blocked) throw new MinutesError('blocked');
+    if (p.finishReason === 'MAX_TOKENS') throw new MinutesError('truncated');
+    return p.text ?? '';
+  });
+  const parsed = parseJsonOrTruncated(raw);
+  if (!Array.isArray(parsed.sections)) throw new MinutesError('truncated');
+  return parsed;
+}
+
+// OpenAI は /v1/files に預けて input_file で渡し、使い終えたら消す（預けたファイルを残さないため）
+async function outlineViaOpenAI(deps, { model, apiKey, buf, mat, text, acc }) {
+  const up = buildOpenAIFileUploadRequest({ apiKey, filename: `${mat.id}.pdf`, contentType: 'application/pdf' });
+  const body = Buffer.concat([Buffer.from(up.prefix), buf, Buffer.from(up.suffix)]);
+  const { id: fileId } = parseOpenAIFileResponse(await post(deps, { url: up.url, method: up.method, headers: up.headers, body }, 'openai'));
+  try {
+    const req = buildResponsesRequest({
+      model: model.id, apiKey, jsonSchema: OUTLINE_SCHEMA, schemaName: 'outline',
+      parts: [{ type: 'input_file', fileId }, { type: 'input_text', text }],
+      maxOutputTokens: OUTLINE_MAX_TOKENS, reasoningEffort: model.reasoningEffort,
+    });
+    const p = parseResponsesResponse(await post(deps, req, 'openai'));
+    acc.inputTokens += p.usage?.inputTokens ?? 0;
+    acc.outputTokens += p.usage?.outputTokens ?? 0;
+    if (/max_output_tokens|length/.test(String(p.finishReason ?? ''))) throw new MinutesError('truncated');
+    return p.text ?? '';
+  } finally {
+    try {
+      const del = buildOpenAIFileDeleteRequest({ apiKey, fileId });
+      await deps.fetch(del.url, { method: del.method, headers: del.headers });
+    } catch {
+      console.error('minutes: openai file delete failed');
+    }
+  }
+}
+
+// JSON が取り出せない、または途中で切れている応答は truncated 扱い（withRetry が 1 回だけやり直す）
+function parseJsonOrTruncated(raw) {
+  let r;
+  try {
+    r = extractJson(raw);
+  } catch {
+    throw new MinutesError('truncated');
+  }
+  if (r.truncated || !r.value || typeof r.value !== 'object') throw new MinutesError('truncated');
+  return r.value;
+}
+
+async function summarizeMaterialsText(deps, { cfg, apiKey, prompt, acc }) {
+  const model = cfg.model;
+  return withRetry(deps, async () => {
+    let raw;
+    if (model.provider === 'openai') {
+      const req = buildResponsesRequest({
+        model: model.id, apiKey, parts: [{ type: 'input_text', text: prompt }], jsonSchema: MATERIAL_SUMMARY_SCHEMA,
+        schemaName: 'material_summary', maxOutputTokens: MATERIAL_SUMMARY_MAX_TOKENS, reasoningEffort: model.reasoningEffort,
+      });
+      const p = parseResponsesResponse(await post(deps, req, 'openai'));
+      acc.inputTokens += p.usage?.inputTokens ?? 0;
+      acc.outputTokens += p.usage?.outputTokens ?? 0;
+      if (/max_output_tokens|length/.test(String(p.finishReason ?? ''))) throw new MinutesError('truncated');
+      raw = p.text ?? '';
+    } else {
+      const req = buildGenerateRequest({
+        model: model.id, apiKey, prompt, parts: [], schema: toGeminiSchema(MATERIAL_SUMMARY_SCHEMA),
+        thinkingLevel: model.thinkingLevel, maxOutputTokens: MATERIAL_SUMMARY_MAX_TOKENS,
+      });
+      const p = parseGenerateResponse(await post(deps, req, 'gemini'));
+      acc.inputTokens += p.usage?.inputTokens ?? 0;
+      acc.outputTokens += (p.usage?.outputTokens ?? 0) + (p.usage?.thoughtTokens ?? 0);
+      if (p.blocked) throw new MinutesError('blocked');
+      if (p.finishReason === 'MAX_TOKENS') throw new MinutesError('truncated');
+      raw = p.text ?? '';
+    }
+    const v = parseJsonOrTruncated(raw);
+    if (typeof v.markdown !== 'string' || !v.markdown.trim()) throw new MinutesError('truncated');
+    return { markdown: v.markdown, mapping: Array.isArray(v.mapping) ? v.mapping : [] };
   });
 }
 
@@ -429,9 +648,17 @@ async function loadConfig(deps, kind, { modelId, promptText }) {
   const fallback = (DEFAULT_MODELS ?? []).find((m) => m.id === id);
   const model = { provider: 'gemini', ...(fallback ?? {}), ...(stored ?? {}), id };
 
+  const { prompt, promptVersion } = await resolvePrompt(deps, kind, promptText, setting);
+  return { model, prompt, promptVersion };
+}
+
+// 編集済みのプロンプトがあればそれ、無ければ初期値。モデルとは別に引けるのは、
+// 資料の目次化と資料つきの議事録が「議事録」のモデルを使い、プロンプトだけ別だから
+async function resolvePrompt(deps, kind, promptText, setting) {
+  const st = setting ?? (await get(deps, deps.K.setting('gemini'))) ?? {};
   let prompt = DEFAULT_PROMPTS[kind];
   let promptVersion = 0; // 0 は初期値
-  const v = setting.promptVersion?.[kind];
+  const v = st.promptVersion?.[kind];
   if (v != null) {
     const p = await get(deps, deps.K.prompt(kind, v));
     if (p?.text) {
@@ -443,7 +670,7 @@ async function loadConfig(deps, kind, { modelId, promptText }) {
     prompt = promptText;
     promptVersion = 'test';
   }
-  return { model, prompt, promptVersion };
+  return { prompt, promptVersion };
 }
 
 async function keyFor(deps, model) {

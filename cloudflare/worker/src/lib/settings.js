@@ -6,6 +6,8 @@ import { safeJson, nowIso } from './time.js';
 
 export const PROVIDERS = ['gemini', 'openai'];
 export const USES = ['card', 'transcribe', 'summarize'];
+// プロンプトだけが持つ種類（モデルの用途ではない。資料の目次化と、資料を踏まえた議事録は「議事録」用のモデルを使う）
+export const PROMPT_KINDS = [...USES, 'outline', 'summarize_materials'];
 
 const keyName = (provider) => `apikey:${provider}`;
 

@@ -4,10 +4,11 @@ import { normalizeText, ulid, usageEvent } from '@hyper-sfa/core';
 import { getModel, getPrompt, getSelectedModel } from '../lib/settings.js';
 import { audit, recordUsage } from '../lib/usage.js';
 import { HttpError, validationError } from './errors.js';
-import { hydrate, loadDetail, loadVisible, audioState } from './store.js';
+import { hydrate, loadDetail, loadVisible, audioState, safeJson } from './store.js';
 import { buildListQuery, encodeCursor, chunk } from './sql.js';
 import { planStart } from './rules.js';
 import { sign, verify } from './signing.js';
+import { materialsRoutes } from './materials.js';
 
 const AUDIO_KEEP_MS = 7 * 24 * 3600 * 1000;
 const SEGMENT_MAX_BYTES = 10 * 1024 * 1024; // 契約 §9
@@ -79,6 +80,12 @@ async function listMinutes(c, extra = {}) {
 /** generate / regenerate の共通。状態を queued にして Workflow を起こす */
 async function startWorkflow(c, row, req) {
   const { target, takeover } = planStart(row, req);
+  const withMaterials = Boolean(req.withMaterials);
+  if (withMaterials) {
+    if (target !== 'summary') throw validationError('資料を踏まえて作り直せるのは議事録だけです', [{ field: 'withMaterials', message: 'target が summary のときだけ' }]);
+    const n = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM minute_materials WHERE minute_id = ? AND outline_status != 'uploading'").bind(row.id).first();
+    if (!n?.n) throw validationError('資料がありません。先に資料を追加してください', [{ field: 'withMaterials', message: '資料が 0 件です' }]);
+  }
   const segs = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM minute_segments WHERE minute_id = ? AND uploaded = 1')
     .bind(row.id)
     .first();
@@ -105,7 +112,7 @@ async function startWorkflow(c, row, req) {
   );
   await c.env.DB.batch(stmts);
   try {
-    await c.env.MINUTES_WORKFLOW.create({ id: workflowId, params: { minuteId: row.id, target } });
+    await c.env.MINUTES_WORKFLOW.create({ id: workflowId, params: { minuteId: row.id, target, ...(withMaterials ? { withMaterials: true } : {}) } });
   } catch {
     await c.env.DB.prepare("UPDATE minutes SET status = 'failed', failure = ?, updated_at = ? WHERE id = ?")
       .bind(
@@ -141,6 +148,7 @@ async function deleteByPrefix(bucket, prefix) {
 }
 
 export function minutesRoutes(app) {
+  materialsRoutes(app);
   // ---- 作る・録音 ----
   app.post('/api/minutes', async (c) => {
     const user = c.get('user');
@@ -359,7 +367,7 @@ export function minutesRoutes(app) {
   app.post('/api/minutes/:id/regenerate', async (c) => {
     const { row } = await loadVisible(c.env, c.req.param('id'), c.get('user').id, { ownerOnly: true });
     const b = await readBody(c);
-    return await startWorkflow(c, row, { mode: 'regenerate', target: b.target });
+    return await startWorkflow(c, row, { mode: 'regenerate', target: b.target, withMaterials: b.withMaterials === true });
   });
 
   app.post('/api/minutes/:id/revert', async (c) => {
@@ -373,9 +381,14 @@ export function minutesRoutes(app) {
     if (['queued', 'transcribing', 'summarizing'].includes(row.status)) throw new HttpError(409, 'conflict', '処理中は戻せません');
     const col = b.target === 'summary' ? 'summary' : 'transcript';
     if (!row[`${col}_prev_key`]) throw validationError('戻せる前の内容がありません');
+    // 議事録は、資料を踏まえた版かどうかと対応表も一緒に入れ替える
+    const extra =
+      col === 'summary'
+        ? ', summary_with_materials = summary_prev_with_materials, summary_prev_with_materials = summary_with_materials, summary_mapping_key = summary_prev_mapping_key, summary_prev_mapping_key = summary_mapping_key'
+        : '';
     // 版の番号は戻さない（増える一方にして、新しい版のファイル名が古いものと重ならないようにする）。SET の右辺は更新前の値で評価される
     await c.env.DB.prepare(
-      `UPDATE minutes SET ${col}_key = ${col}_prev_key, ${col}_prev_key = ${col}_key, updated_at = ? WHERE id = ?`,
+      `UPDATE minutes SET ${col}_key = ${col}_prev_key, ${col}_prev_key = ${col}_key${extra}, updated_at = ? WHERE id = ?`,
     )
       .bind(nowIso(), id)
       .run();
@@ -407,7 +420,18 @@ export function minutesRoutes(app) {
     if (!row.summary_key) throw new HttpError(404, 'not_found', '議事録はまだありません');
     const o = await c.env.DATA.get(row.summary_key);
     if (!o) throw new HttpError(404, 'not_found', '議事録が見つかりません');
-    return c.json({ markdown: await o.text(), version: row.summary_version });
+    const out = { markdown: await o.text(), version: row.summary_version, withMaterials: Boolean(row.summary_with_materials) };
+    if (out.withMaterials) {
+      // 対応表は資料を踏まえた版だけ。文章の JSON なので読んでよい
+      let mapping = [];
+      const mo = row.summary_mapping_key ? await c.env.DATA.get(row.summary_mapping_key) : null;
+      if (mo) {
+        const v = safeJson(await mo.text(), []);
+        mapping = Array.isArray(v) ? v : Array.isArray(v?.mapping) ? v.mapping : [];
+      }
+      out.mapping = mapping;
+    }
+    return c.json(out);
   });
 
   // ---- 音声 ----
@@ -510,10 +534,11 @@ export function minutesRoutes(app) {
       }
     }
     await c.env.DB.prepare(
-      'UPDATE minutes SET deleted_at = ?, audio_deleted = 1, transcript_key = NULL, transcript_prev_key = NULL, summary_key = NULL, summary_prev_key = NULL, full_audio_key = NULL, updated_at = ? WHERE id = ?',
+      'UPDATE minutes SET deleted_at = ?, audio_deleted = 1, transcript_key = NULL, transcript_prev_key = NULL, summary_key = NULL, summary_prev_key = NULL, summary_mapping_key = NULL, summary_prev_mapping_key = NULL, summary_with_materials = 0, summary_prev_with_materials = 0, summary_material_ids = "[]", full_audio_key = NULL, updated_at = ? WHERE id = ?',
     )
       .bind(nowIso(), nowIso(), id)
       .run();
+    await c.env.DB.prepare('DELETE FROM minute_materials WHERE minute_id = ?').bind(id).run();
     await deleteByPrefix(c.env.AUDIO, `minutes/${id}/`);
     await deleteByPrefix(c.env.DATA, `minutes/${id}/`);
     await audit(c.env, user.id, 'minutes.delete', { minuteId: id });

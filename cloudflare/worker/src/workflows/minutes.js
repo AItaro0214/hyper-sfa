@@ -19,6 +19,17 @@ import {
   buildChatRequest,
   parseChatResponse,
   classifyOpenAIError,
+  extractJson,
+  OUTLINE_SCHEMA,
+  MATERIAL_SUMMARY_SCHEMA,
+  outlineFromExtract,
+  formatMaterialsForPrompt,
+  normalizeMapping,
+  buildOpenAIFileUploadRequest,
+  parseOpenAIFileResponse,
+  buildOpenAIFileDeleteRequest,
+  buildResponsesRequest,
+  parseResponsesResponse,
 } from '@hyper-sfa/core';
 import { getApiKey, getSelectedModel, getModel, getPrompt } from '../lib/settings.js';
 import { recordUsage } from '../lib/usage.js';
@@ -42,6 +53,17 @@ const deps = {
   buildChatRequest,
   parseChatResponse,
   classifyOpenAIError,
+  extractJson,
+  OUTLINE_SCHEMA,
+  MATERIAL_SUMMARY_SCHEMA,
+  outlineFromExtract,
+  formatMaterialsForPrompt,
+  normalizeMapping,
+  buildOpenAIFileUploadRequest,
+  parseOpenAIFileResponse,
+  buildOpenAIFileDeleteRequest,
+  buildResponsesRequest,
+  parseResponsesResponse,
   getApiKey,
   getSelectedModel,
   getModel,
@@ -50,7 +72,7 @@ const deps = {
 };
 
 export class MinutesWorkflow extends WorkflowEntrypoint {
-  // event.payload = { minuteId, target: 'generate' | 'summary' | 'transcript' }
+  // event.payload = { minuteId, target: 'generate' | 'summary' | 'transcript', withMaterials?: true }
   // または { test: true, jobId, kind, audioKey, transcript, promptText, modelId, userId }（開発コンソールの試し）
   async run(event, step) {
     return await runMinutesPipeline({ env: this.env, deps, event, step });

@@ -20,6 +20,7 @@ import { ProviderError, deleteFromFilesApi, generateCard, interpretCardResponse,
 import { buildCardSearch, clampLimit } from '../lib/search.js';
 import {
   PROVIDERS,
+  PROMPT_KINDS,
   USES,
   currentPrompt,
   getApiKey,
@@ -48,7 +49,7 @@ function assertProvider(check, provider) {
 async function settingsResponse(env) {
   const [gem, oai, sel] = await Promise.all([keyStatus(env, 'gemini'), keyStatus(env, 'openai'), selection(env)]);
   const prompts = {};
-  for (const kind of USES) prompts[kind] = { version: (await currentPrompt(env, kind)).version };
+  for (const kind of PROMPT_KINDS) prompts[kind] = { version: (await currentPrompt(env, kind)).version };
   return { keys: { gemini: gem, openai: oai }, models: sel, prompts };
 }
 
@@ -265,7 +266,7 @@ export function devRoutes(app) {
   // ---- プロンプト ----
   const kindOf = (c) => {
     const kind = c.req.param('kind');
-    if (!USES.includes(kind)) throw notFound('プロンプトが見つかりません');
+    if (!PROMPT_KINDS.includes(kind)) throw notFound('プロンプトが見つかりません');
     return kind;
   };
 

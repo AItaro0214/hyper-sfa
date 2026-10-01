@@ -28,6 +28,7 @@ export const K = {
   audit: (month, at, id) => ({ pk: `AUDIT#${month}`, sk: `${at}#${id}` }),
   minute: (id) => ({ pk: `MIN#${id}`, sk: 'META' }),
   minuteSeg: (id, seq) => ({ pk: `MIN#${id}`, sk: `SEG#${padSeq(Number(seq), 4)}` }),
+  minuteMaterial: (id, seq) => ({ pk: `MIN#${id}`, sk: `MAT#${padSeq(Number(seq), 3)}` }),
   minuteShare: (id, email) => ({ pk: `MIN#${id}`, sk: `SHARE#${lower(email)}` }),
   userMinute: (email, heldAt, id) => ({ pk: `USER#${lower(email)}`, sk: `MIN#${heldAt}#${id}` }),
   cardMinute: (cardId, heldAt, id) => ({ pk: `CARD#${cardId}`, sk: `MIN#${heldAt}#${id}` }),

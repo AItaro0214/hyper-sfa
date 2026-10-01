@@ -11,6 +11,21 @@ export function safeJson(s, fallback = null) {
   }
 }
 
+/** 行を契約の形にする */
+export function materialItem(r) {
+  return {
+    id: r.id,
+    seq: r.seq,
+    name: r.name,
+    kind: r.kind,
+    size: r.size,
+    pages: r.pages ?? null,
+    outlineStatus: r.outline_status,
+    uploadedBy: { id: r.uploaded_by, name: r.uploader_name ?? '' },
+    uploadedAt: r.uploaded_at,
+  };
+}
+
 /** 音声が見せられる状態か。期限は audio_expires_at（含む）まで */
 export function audioState(row, now = new Date()) {
   const expired = row.audio_expires_at ? now.getTime() > new Date(row.audio_expires_at).getTime() : false;
@@ -71,6 +86,13 @@ export async function hydrate(env, rows, userId, { withShares = false } = {}) {
           ownedIds,
         )
       : [];
+  // 資料（アップロードの途中のものは出さない）
+  const mats = await selectIn(
+    env,
+    "SELECT m.*, u.display_name AS uploader_name FROM minute_materials m LEFT JOIN users u ON u.id = m.uploaded_by WHERE m.outline_status != 'uploading' AND m.minute_id IN",
+    'ORDER BY m.seq',
+    ids,
+  );
   const by = (list) => {
     const m = new Map();
     for (const x of list) {
@@ -82,6 +104,7 @@ export async function hydrate(env, rows, userId, { withShares = false } = {}) {
   const cpBy = by(cps);
   const atBy = by(ats);
   const shBy = by(shs);
+  const matBy = by(mats);
   const now = new Date();
   return rows.map((r) => {
     const relation = r.owner_id === userId ? 'owner' : 'shared';
@@ -121,8 +144,11 @@ export async function hydrate(env, rows, userId, { withShares = false } = {}) {
             createdAt: r.summary_at,
             modelId: r.summary_model,
             hasPrevious: Boolean(r.summary_prev_key),
+            withMaterials: Boolean(r.summary_with_materials),
+            materialIds: r.summary_with_materials ? safeJson(r.summary_material_ids, []) : [],
           }
         : null,
+      materials: (matBy.get(r.id) ?? []).map(materialItem),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };

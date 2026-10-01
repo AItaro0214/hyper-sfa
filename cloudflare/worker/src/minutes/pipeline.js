@@ -14,7 +14,7 @@ const RETRY = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' 
 const SMALL = { retries: { limit: 1, delay: '2 seconds' }, timeout: '1 minute' };
 const POLL_MAX = 15;
 // 何度やっても同じ結果になる失敗。ステップの再試行をさせない
-const NON_RETRYABLE = new Set(['blocked', 'not_configured', 'audio_missing']);
+const NON_RETRYABLE = new Set(['blocked', 'not_configured', 'audio_missing', 'material_missing']);
 // Gemini は音声を 1 秒 32 トークンで数える。inputTokens には音声分が含まれるので、費用の二重計上を避けるために引く
 const GEMINI_AUDIO_TOKENS_PER_SEC = 32;
 
@@ -91,10 +91,15 @@ function providerMessage(kind) {
  * Gemini の Files API に R2 の音声をストリームで預ける（Worker は中身を読まない）。
  * 戻り値は { name, uri, mimeType, state }。
  */
-export async function uploadToGemini({ env, deps, apiKey, key, mimeType, displayName }) {
+export async function uploadToGemini({ env, deps, apiKey, key, mimeType, displayName, bucket }) {
   const f = deps.fetch ?? fetch;
-  const obj = await env.AUDIO.get(key);
-  if (!obj) throw new StepError('audio_missing', '音声が見つかりません（削除された可能性があります）', false);
+  // 音声は AUDIO、資料は DATA。どちらも Worker は中身を読まない
+  const obj = await (bucket ?? env.AUDIO).get(key);
+  if (!obj) {
+    throw bucket
+      ? new StepError('material_missing', '資料が見つかりません（削除された可能性があります）', false)
+      : new StepError('audio_missing', '音声が見つかりません（削除された可能性があります）', false);
+  }
   const sizeBytes = obj.size;
   const startReq = deps.buildFilesUploadRequest({ apiKey, mimeType, displayName, sizeBytes });
   const startRes = await f(startReq.url, { method: startReq.method, headers: startReq.headers, body: startReq.body });
@@ -130,13 +135,14 @@ export async function deleteGeminiFile({ deps, apiKey, name }) {
 }
 
 /** generateContent を呼んで { text, usage } を返す。失敗は StepError */
-export async function callGemini({ deps, apiKey, model, prompt, parts, maxOutputTokens }) {
+export async function callGemini({ deps, apiKey, model, prompt, parts, maxOutputTokens, schema }) {
   const f = deps.fetch ?? fetch;
   const req = deps.buildGenerateRequest({
     model: model.id,
     apiKey,
     prompt,
     parts,
+    schema,
     thinkingLevel: model.thinkingLevel,
     maxOutputTokens,
   });
@@ -164,6 +170,64 @@ export async function callOpenAIChat({ deps, apiKey, model, prompt, maxOutputTok
   if (r.finishReason === 'length') throw new StepError('truncated', '出力が途中で切れました');
   if (!r.text || !r.text.trim()) throw new StepError('empty', '結果が空でした');
   return { text: r.text, usage: { inputTokens: num(r.usage, 'inputTokens'), outputTokens: num(r.usage, 'outputTokens') } };
+}
+
+/**
+ * OpenAI の Responses API。PDF は /v1/files に預けた file_id で渡す。出力は JSON スキーマで縛れる。
+ * 思考に使ったトークンも出力として数える（Gemini の thoughtTokens と同じ扱い）。
+ */
+export async function callOpenAIResponses({ deps, apiKey, model, parts, jsonSchema, schemaName, maxOutputTokens }) {
+  const f = deps.fetch ?? fetch;
+  const req = deps.buildResponsesRequest({ model: model.id, apiKey, parts, jsonSchema, schemaName, maxOutputTokens, reasoningEffort: model.thinkingLevel });
+  const res = await f(req.url, { method: req.method, headers: req.headers, body: req.body });
+  const json = await readJson(res);
+  if (!res.ok) throw openaiError(deps, res.status, json);
+  const r = deps.parseResponsesResponse(json);
+  if (r.incomplete || /max_output|length/i.test(String(r.finishReason ?? ''))) throw new StepError('truncated', '出力が途中で切れました');
+  if (!r.text || !r.text.trim()) throw new StepError('empty', '結果が空でした');
+  return {
+    text: r.text,
+    usage: { inputTokens: num(r.usage, 'inputTokens'), outputTokens: num(r.usage, 'outputTokens') + num(r.usage, 'thoughtTokens') },
+  };
+}
+
+/**
+ * OpenAI の Files API に R2 の資料をストリームで預ける（Worker は中身を読まない）。戻り値は file_id。
+ * multipart の本文は「prefix + ファイルのバイト列 + suffix」。prefix と suffix は TransformStream の start / flush で
+ * 1 回ずつ足すだけで、ファイルの中身は R2 → OpenAI へ素通しする。長さは足し算で分かるので FixedLengthStream で明示する。
+ */
+export async function uploadToOpenAI({ env, deps, apiKey, key, filename, contentType }) {
+  const f = deps.fetch ?? fetch;
+  const obj = await env.DATA.get(key);
+  if (!obj) throw new StepError('material_missing', '資料が見つかりません（削除された可能性があります）', false);
+  const req = deps.buildOpenAIFileUploadRequest({ apiKey, filename, contentType, purpose: 'user_data' });
+  const framed = new TransformStream({
+    start(controller) {
+      controller.enqueue(req.prefix);
+    },
+    flush(controller) {
+      controller.enqueue(req.suffix);
+    },
+  });
+  obj.body.pipeTo(framed.writable).catch(() => {});
+  let body = framed.readable;
+  if (typeof FixedLengthStream !== 'undefined') {
+    const fls = new FixedLengthStream(req.prefix.length + obj.size + req.suffix.length);
+    framed.readable.pipeTo(fls.writable).catch(() => {});
+    body = fls.readable;
+  }
+  const res = await f(req.url, { method: req.method, headers: req.headers, body, duplex: 'half' });
+  const json = await readJson(res);
+  if (!res.ok) throw openaiError(deps, res.status, json);
+  const id = deps.parseOpenAIFileResponse(json)?.id;
+  if (!id) throw new StepError('provider', 'ファイルの預け先が取得できませんでした');
+  return id;
+}
+
+export async function deleteOpenAIFile({ deps, apiKey, fileId }) {
+  const f = deps.fetch ?? fetch;
+  const req = deps.buildOpenAIFileDeleteRequest({ apiKey, fileId });
+  await f(req.url, { method: req.method, headers: req.headers });
 }
 
 /**
@@ -231,6 +295,8 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
   if (payload.test) return await runTest({ env, deps, payload, step });
   const { minuteId } = payload;
   const target = payload.target ?? 'generate';
+  // 資料を踏まえた議事録は、議事録だけの作り直しのときだけ（文字起こしは触らない）
+  const withMaterials = target === 'summary' && payload.withMaterials === true;
   let counter = 0;
 
   /** step.do を包む。再試行しても無駄な失敗は ok:false で返し、再試行を使い切った失敗も ok:false にする */
@@ -288,6 +354,20 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
       const err = (target !== 'summary' ? await configErr(tModel, '文字起こし') : null) ?? (await configErr(sModel, '議事録'));
       const tPrompt = await deps.getPrompt(env, 'transcribe');
       const sPrompt = await deps.getPrompt(env, 'summarize');
+      let materials = [];
+      let oPrompt = null;
+      let smPrompt = null;
+      if (withMaterials) {
+        materials = (
+          await env.DB.prepare(
+            "SELECT id, seq, name, kind, size, pages, key, extract_key, outline_key, outline_status FROM minute_materials WHERE minute_id = ? AND outline_status != 'uploading' ORDER BY seq",
+          )
+            .bind(minuteId)
+            .all()
+        ).results;
+        oPrompt = (await deps.getPrompt(env, 'outline')).text;
+        smPrompt = (await deps.getPrompt(env, 'summarize_materials')).text;
+      }
       return {
         missing: false,
         configError: err,
@@ -303,6 +383,9 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
         sModel,
         tPrompt: tPrompt.text,
         sPrompt: sPrompt.text,
+        materials,
+        oPrompt,
+        smPrompt,
       };
     });
     if (loaded.missing) return { ok: false, reason: 'missing' };
@@ -468,9 +551,11 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
     }
 
     // ---- 議事録 ----
-    const sum = await guarded('summarize', RETRY, async () => {
+    const sum = withMaterials
+      ? await summarizeWithMaterials({ env, deps, step, guarded, loaded, minuteId })
+      : await guarded('summarize', RETRY, async () => {
       const model = loaded.sModel;
-      const cur = await env.DB.prepare('SELECT transcript_key, summary_key, summary_prev_key FROM minutes WHERE id = ?').bind(minuteId).first();
+      const cur = await env.DB.prepare('SELECT transcript_key, summary_key, summary_prev_key, summary_prev_mapping_key FROM minutes WHERE id = ?').bind(minuteId).first();
       if (!cur?.transcript_key) throw new StepError('empty', '文字起こしがありません', false);
       await env.DB.prepare("UPDATE minutes SET status = 'summarizing', step = 'summarize', failure = NULL, updated_at = ? WHERE id = ?")
         .bind(nowIso(), minuteId)
@@ -491,14 +576,7 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
       }
       const newKey = `minutes/${minuteId}/summary-v${loaded.sVersion}.md`;
       await env.DATA.put(newKey, r.text);
-      if (cur.summary_key !== newKey) {
-        await env.DB.prepare(
-          'UPDATE minutes SET summary_prev_key = summary_key, summary_key = ?, summary_version = ?, summary_model = ?, summary_at = ?, updated_at = ? WHERE id = ?',
-        )
-          .bind(newKey, loaded.sVersion, model.id, nowIso(), nowIso(), minuteId)
-          .run();
-        if (cur.summary_prev_key && cur.summary_prev_key !== newKey) await env.DATA.delete(cur.summary_prev_key);
-      }
+      await saveSummary({ env, minuteId, cur, newKey, version: loaded.sVersion, modelId: model.id, withMaterials: false });
       await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: true, usage: r.usage, retry: loaded.summarizeIsRetry });
       return { key: newKey };
     });
@@ -523,6 +601,254 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
     }
     return { ok: false, reason: 'exception' };
   }
+}
+
+/**
+ * 新しい議事録の版を保存する。前の版は prev に回し、2 つ前は消す。
+ * 資料を踏まえた版かどうか・対応表も prev に回す（「前の内容に戻す」で一緒に戻るように）。
+ * 再試行されても prev を壊さないよう、すでに新しい版になっていれば触らない。SET の右辺は更新前の値で評価される。
+ */
+async function saveSummary({ env, minuteId, cur, newKey, version, modelId, withMaterials, materialIds = [], mappingKey = null }) {
+  if (cur.summary_key === newKey) return;
+  await env.DB.prepare(
+    `UPDATE minutes SET summary_prev_key = summary_key, summary_key = ?, summary_version = ?, summary_model = ?, summary_at = ?, updated_at = ?,
+       summary_prev_with_materials = summary_with_materials, summary_prev_mapping_key = summary_mapping_key,
+       summary_with_materials = ?, summary_material_ids = ?, summary_mapping_key = ? WHERE id = ?`,
+  )
+    .bind(newKey, version, modelId, nowIso(), nowIso(), withMaterials ? 1 : 0, JSON.stringify(materialIds), mappingKey, minuteId)
+    .run();
+  if (cur.summary_prev_key && cur.summary_prev_key !== newKey) await env.DATA.delete(cur.summary_prev_key);
+  if (cur.summary_prev_mapping_key && cur.summary_prev_mapping_key !== mappingKey) await env.DATA.delete(cur.summary_prev_mapping_key);
+}
+
+const outlineKeyOf = (minuteId, m) => m.outline_key || `minutes/${minuteId}/materials/${m.id}.outline.json`;
+
+/** 目次の JSON を取り出す。sections が無ければ失敗（空の目次を保存しない）。途中で切れていれば読めた分を使う */
+function parseOutline(deps, text) {
+  let v;
+  try {
+    v = deps.extractJson(text).value;
+  } catch {
+    throw new StepError('empty', '目次を読み取れませんでした');
+  }
+  if (!v || !Array.isArray(v.sections) || v.sections.length === 0) throw new StepError('empty', '目次が空でした');
+  return v;
+}
+
+/** PDF 1 件の目次化。失敗しても例外にせず、その資料を failed にして呼び出し元は続行する */
+async function outlinePdf({ env, deps, step, guarded, loaded, minuteId, m }) {
+  const model = loaded.sModel;
+  const outlineKey = outlineKeyOf(minuteId, m);
+  const prompt = deps.renderPrompt(loaded.oPrompt, { NAME: m.name, KIND: m.kind });
+  let file = null;
+  let failure = null;
+
+  if (model.provider === 'gemini') {
+    const up = await guarded(`outline-upload-${m.seq}`, RETRY, async () => {
+      const apiKey = await deps.getApiKey(env, 'gemini');
+      return await uploadToGemini({ env, deps, apiKey, key: m.key, mimeType: 'application/pdf', displayName: `${minuteId}-mat-${m.seq}`, bucket: env.DATA });
+    });
+    if (up.ok) {
+      file = up.value;
+      // 預けた直後は PROCESSING のことがある。ACTIVE になるまで、寝てから確かめる
+      for (let i = 0; file.state !== 'ACTIVE' && file.state !== 'FAILED' && i < POLL_MAX; i++) {
+        await step.sleep(`outline-wait-${m.seq}-${i}`, '3 seconds');
+        const cur = file;
+        const st = await guarded(`outline-check-${m.seq}-${i}`, SMALL, async () => {
+          const apiKey = await deps.getApiKey(env, 'gemini');
+          const j = await getGeminiFileState({ deps, apiKey, name: cur.name });
+          return { ...cur, state: j?.state ?? cur.state };
+        });
+        if (!st.ok) {
+          failure = st.failure;
+          break;
+        }
+        file = st.value;
+      }
+      if (!failure && file.state !== 'ACTIVE') failure = { kind: 'provider', message: '資料の準備が終わりませんでした', retryable: true };
+    } else {
+      failure = up.failure;
+    }
+  }
+
+  if (!failure) {
+    const r = await guarded(`outline-${m.seq}`, RETRY, async () => {
+      const apiKey = await deps.getApiKey(env, model.provider);
+      let out;
+      let openaiFileId = null;
+      try {
+        if (model.provider === 'gemini') {
+          out = await callGemini({
+            deps,
+            apiKey,
+            model,
+            prompt,
+            parts: [{ fileData: { fileUri: file.uri, mimeType: file.mimeType || 'application/pdf' } }],
+            schema: deps.OUTLINE_SCHEMA, // buildGenerateRequest が Gemini 向けに type を大文字にする
+            maxOutputTokens: 32768,
+          });
+        } else {
+          openaiFileId = await uploadToOpenAI({ env, deps, apiKey, key: m.key, filename: m.name, contentType: 'application/pdf' });
+          out = await callOpenAIResponses({
+            deps,
+            apiKey,
+            model,
+            parts: [{ type: 'input_file', fileId: openaiFileId }, { type: 'input_text', text: prompt }],
+            jsonSchema: deps.OUTLINE_SCHEMA,
+            schemaName: 'outline',
+            maxOutputTokens: 32768,
+          });
+        }
+      } catch (e) {
+        await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: toFailure(e).kind, retry: true });
+        throw e;
+      } finally {
+        // 預けた資料は使い終わったらすぐ消す。失敗しても続ける
+        if (openaiFileId) await deleteOpenAIFile({ deps, apiKey, fileId: openaiFileId }).catch(() => {});
+      }
+      const outline = parseOutline(deps, out.text);
+      await env.DATA.put(outlineKey, JSON.stringify(outline));
+      await env.DB.prepare("UPDATE minute_materials SET outline_key = ?, outline_status = 'done' WHERE id = ?").bind(outlineKey, m.id).run();
+      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: true, usage: out.usage, retry: true });
+      return { key: outlineKey };
+    });
+    if (!r.ok) failure = r.failure;
+  }
+
+  if (file?.name) {
+    const name = file.name;
+    await step.do(`outline-cleanup-${m.seq}`, SMALL, async () => {
+      try {
+        await deleteGeminiFile({ deps, apiKey: await deps.getApiKey(env, 'gemini'), name });
+      } catch {
+        // 無視
+      }
+      return true;
+    });
+  }
+  if (failure) {
+    // 目次が作れなくても議事録は作る。その資料は名前だけ渡す
+    await step.do(`outline-failed-${m.seq}`, SMALL, async () => {
+      await env.DB.prepare("UPDATE minute_materials SET outline_status = 'failed' WHERE id = ?").bind(m.id).run();
+      return true;
+    });
+  }
+}
+
+/**
+ * 資料を踏まえた議事録（minutes-design.md §15.4 / §15.5）。guarded と同じ { ok, value | failure } を返す。
+ * 1 段目: PDF はモデルで、pptx / xlsx は抜いた JSON から機械的に、資料ごとの目次にする。
+ * 2 段目: 目次 + 文字起こしから、対応表と議事録を JSON で 1 回で出させる。
+ */
+async function summarizeWithMaterials({ env, deps, step, guarded, loaded, minuteId }) {
+  const model = loaded.sModel;
+  const mats = loaded.materials ?? [];
+  if (mats.length === 0) return { ok: false, failure: { kind: 'empty', message: '資料がありません', retryable: false } };
+
+  await step.do('status-outline', SMALL, async () => {
+    await env.DB.prepare("UPDATE minutes SET status = 'summarizing', step = 'outline', failure = NULL, updated_at = ? WHERE id = ?")
+      .bind(nowIso(), minuteId)
+      .run();
+    return true;
+  });
+
+  for (const m of mats) {
+    if (m.kind === 'pdf') {
+      // done は作り直さない。failed は、利用者が「作り直す」を押したので、もう一度試す
+      if (m.outline_status !== 'pending' && m.outline_status !== 'failed') continue;
+      await outlinePdf({ env, deps, step, guarded, loaded, minuteId, m });
+    } else if (m.extract_key) {
+      // 文章の JSON なので Worker で読んでよい。モデルは使わない。失敗しても名前だけ渡して続ける
+      await guarded(`outline-${m.seq}`, SMALL, async () => {
+        const o = await env.DATA.get(m.extract_key);
+        if (!o) throw new StepError('material_missing', '抜いた内容が見つかりません', false);
+        const outline = deps.outlineFromExtract(JSON.parse(await o.text()), { name: m.name });
+        await env.DATA.put(outlineKeyOf(minuteId, m), JSON.stringify(outline));
+        return true;
+      });
+    }
+  }
+
+  return await guarded('summarize-materials', { ...RETRY, timeout: '10 minutes' }, async () => {
+    const cur = await env.DB.prepare('SELECT transcript_key, summary_key, summary_prev_key, summary_prev_mapping_key FROM minutes WHERE id = ?').bind(minuteId).first();
+    if (!cur?.transcript_key) throw new StepError('empty', '文字起こしがありません', false);
+    await env.DB.prepare("UPDATE minutes SET status = 'summarizing', step = 'summarize_materials', failure = NULL, updated_at = ? WHERE id = ?")
+      .bind(nowIso(), minuteId)
+      .run();
+    const to = await env.DATA.get(cur.transcript_key);
+    const transcript = to ? await to.text() : '';
+    // 目次が作れていない資料は outline: null（名前だけ渡る）
+    const withOutline = [];
+    for (const m of mats) {
+      let outline = null;
+      const o = await env.DATA.get(outlineKeyOf(minuteId, m));
+      if (o) {
+        try {
+          outline = JSON.parse(await o.text());
+        } catch {
+          outline = null;
+        }
+      }
+      withOutline.push({ seq: m.seq, name: m.name, kind: m.kind, outline });
+    }
+    const prompt = deps.renderPrompt(loaded.smPrompt, {
+      ...loaded.vars,
+      MATERIALS: deps.formatMaterialsForPrompt(withOutline),
+      TRANSCRIPT: transcript,
+    });
+    const apiKey = await deps.getApiKey(env, model.provider);
+    let r;
+    try {
+      r =
+        model.provider === 'gemini'
+          ? await callGemini({ deps, apiKey, model, prompt, parts: [], schema: deps.MATERIAL_SUMMARY_SCHEMA, maxOutputTokens: 32768 })
+          : await callOpenAIResponses({
+              deps,
+              apiKey,
+              model,
+              parts: [{ type: 'input_text', text: prompt }],
+              jsonSchema: deps.MATERIAL_SUMMARY_SCHEMA,
+              schemaName: 'material_summary',
+              maxOutputTokens: 32768,
+            });
+    } catch (e) {
+      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: toFailure(e).kind, retry: true });
+      throw e;
+    }
+    let parsed;
+    try {
+      const ex = deps.extractJson(r.text);
+      if (ex.truncated) throw new Error('truncated');
+      parsed = ex.value;
+    } catch {
+      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: 'empty', retry: true, usage: r.usage });
+      throw new StepError('empty', '結果を読み取れませんでした');
+    }
+    if (typeof parsed?.markdown !== 'string' || !parsed.markdown.trim()) {
+      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: 'empty', retry: true, usage: r.usage });
+      throw new StepError('empty', '結果が空でした');
+    }
+    const nameBySeq = new Map(mats.map((m) => [Number(m.seq), m.name]));
+    // 資料を後から消されても名前が出せるよう、対応表に名前を持たせる
+    const mapping = deps.normalizeMapping(parsed.mapping, mats).map((x) => ({ ...x, materialName: nameBySeq.get(x.material) ?? '' }));
+    const newKey = `minutes/${minuteId}/summary-v${loaded.sVersion}.md`;
+    const mappingKey = `minutes/${minuteId}/summary-mapping-v${loaded.sVersion}.json`;
+    await env.DATA.put(newKey, parsed.markdown);
+    await env.DATA.put(mappingKey, JSON.stringify(mapping));
+    await saveSummary({
+      env,
+      minuteId,
+      cur,
+      newKey,
+      version: loaded.sVersion,
+      modelId: model.id,
+      withMaterials: true,
+      materialIds: mats.map((m) => m.id),
+      mappingKey,
+    });
+    await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: true, usage: r.usage, retry: true });
+    return { key: newKey };
+  });
 }
 
 /** 開発コンソールの「試し」。結果は settings の test:<jobId> に書く */

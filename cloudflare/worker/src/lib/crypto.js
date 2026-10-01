@@ -61,8 +61,14 @@ export async function hashPassword(password, { pepper, iterations, salt } = {}) 
   return { hash, salt: toB64(saltBytes), iterations };
 }
 
-export async function verifyPassword(password, { hash, salt, iterations }, pepper) {
+// 第 2 引数は hashPassword の戻り値（hash）でも、users 表の行（password_hash）でもよい。
+// ログイン処理は DB の行をそのまま渡すので、列名の違いをここで吸収する（これを見落として
+// ログインが常に失敗する不具合があった）
+export async function verifyPassword(password, record, pepper) {
   if (!pepper) throw new Error('pepper is required');
+  const hash = record?.hash ?? record?.password_hash;
+  const { salt, iterations } = record ?? {};
+  if (!hash || !salt || !iterations) return false;
   const actual = await pbkdf2(password, pepper, fromB64(salt), iterations);
   return timingSafeEqualStr(actual, hash);
 }

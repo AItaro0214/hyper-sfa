@@ -10,16 +10,23 @@ export const STATUS_LABEL = {
   queued: '順番待ち',
   transcribing: '文字起こし中',
   summarizing: '議事録を作成中',
+  outlining: '目次を作成中',
   done: '完了',
   failed: '失敗',
 };
 
 export function isProcessing(status) {
-  return status === 'queued' || status === 'transcribing' || status === 'summarizing';
+  return status === 'queued' || status === 'transcribing' || status === 'outlining' || status === 'summarizing';
 }
 
 export function statusText(m) {
-  const base = STATUS_LABEL[m.status] || m.status;
+  let base = STATUS_LABEL[m.status] || m.status;
+  // 資料つきの作り直し: 目次化 → 目次と文字起こしから議事録。契約に step の名前が無いので、値を広めに見る
+  const step = (m.progress && m.progress.step) || m.step || '';
+  if (m.status === 'summarizing' || m.status === 'outlining') {
+    if (m.status === 'outlining' || step === 'outline') base = '目次を作成中';
+    else if (step === 'summarize_materials' || (m.progress && m.progress.withMaterials)) base = '資料を踏まえて作成中';
+  }
   if (m.status === 'transcribing' && m.progress && m.progress.segmentsTotal) {
     return `${base}（${m.progress.segmentsDone} / ${m.progress.segmentsTotal}）`;
   }

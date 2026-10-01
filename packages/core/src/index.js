@@ -11,9 +11,15 @@ export {
   buildChatRequest,
   parseChatResponse,
   classifyOpenAIError,
+  buildOpenAIFileUploadRequest,
+  parseOpenAIFileResponse,
+  buildOpenAIFileDeleteRequest,
+  buildResponsesRequest,
+  parseResponsesResponse,
   buildListModelsRequest as buildOpenAIListModelsRequest,
   parseListModels as parseOpenAIListModels,
 } from './openai.js';
+export * from './materials.js';
 export * from './transcript.js';
 export * from './csv.js';
 export * from './userImport.js';

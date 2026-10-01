@@ -92,3 +92,103 @@ test('動いている最中(20 分未満)は二重起動しない', async () => 
   assert.equal(r.skipped, true);
   assert.equal(t.fetchCalls, 0);
 });
+
+// ---- 資料を踏まえた議事録（§15） ----
+
+const OUTLINE_JSON = JSON.stringify({ sections: [{ page: 1, title: '表紙', summary: '提案の概要', figures: ['棒グラフ: 関西だけ伸びている'], keywords: ['提案'] }] });
+const SUMMARY_JSON = JSON.stringify({
+  mapping: [
+    { material: 1, page: 1, start: '00:00:10', end: '00:01:00', confidence: 'high' },
+    { material: 2, page: 1, start: '1:00', end: '2:00', confidence: 'bogus' },
+    { material: 9, page: 1, start: '0:00', end: '0:10', confidence: 'low' },
+  ],
+  markdown: '## 要点\n資料に沿った議事録',
+});
+const XLSX_EXTRACT = { kind: 'xlsx', sheets: [{ name: '売上', rows: [['地域', '値'], ['関東', 120]], truncated: false, charts: [] }] };
+
+function materialSeed() {
+  return [
+    {
+      pk: 'MIN#m1', sk: 'META', status: 'queued', ownerEmail: 'a@x.jp', title: '定例', heldAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
+      transcript: { key: 'minutes/m1/transcript-v1.txt', version: 1 },
+      summary: { key: 'minutes/m1/summary-v1.md', version: 1 },
+    },
+    { pk: 'MIN#m1', sk: 'MAT#001', id: 'm001', seq: 1, name: '提案書.pdf', kind: 'pdf', state: 'ready', outlineStatus: 'pending', key: 'minutes/m1/materials/m001.pdf' },
+    { pk: 'MIN#m1', sk: 'MAT#002', id: 'm002', seq: 2, name: '売上.xlsx', kind: 'xlsx', state: 'ready', outlineStatus: 'none', key: 'minutes/m1/materials/m002.xlsx', extractKey: 'minutes/m1/materials/m002.extract.json' },
+  ];
+}
+
+function materialDeps(ddb, { pdfOk }) {
+  const calls = [];
+  const t = makeDeps({
+    ddb,
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(init.body);
+      const parts = (body.contents ?? []).flatMap((c) => c.parts ?? []);
+      const pdf = parts.find((p) => p.inlineData?.mimeType === 'application/pdf');
+      calls.push({ pdf: Boolean(pdf), prompt: parts.map((p) => p.text ?? '').join('') });
+      if (pdf) return pdfOk ? reply(OUTLINE_JSON) : { status: 400, json: async () => ({ error: { message: 'bad' } }) };
+      return reply(SUMMARY_JSON);
+    },
+  });
+  t.puts.set('minutes/m1/transcript-v1.txt', Buffer.from('[00:00:10] 話者A: 提案です'));
+  t.puts.set('minutes/m1/materials/m001.pdf', Buffer.from('%PDF-1.4 fake'));
+  t.puts.set('minutes/m1/materials/m002.extract.json', Buffer.from(JSON.stringify(XLSX_EXTRACT)));
+  return { t, calls };
+}
+
+test('資料つき: PDF（Gemini）と xlsx の目次 → 議事録と対応表が保存される', async () => {
+  const ddb = fakeDdb(materialSeed());
+  const { t, calls } = materialDeps(ddb, { pdfOk: true });
+  const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
+  assert.equal(r.ok, true);
+
+  // 目次化は PDF の 1 回だけ（xlsx はモデルを使わない）。議事録は 1 回
+  assert.equal(calls.filter((c) => c.pdf).length, 1);
+  assert.equal(t.fetchCalls, 2);
+  assert.match(calls.find((c) => !c.pdf).prompt, /売上/); // xlsx の目次が差し込まれている
+  assert.match(calls.find((c) => !c.pdf).prompt, /関西だけ伸びている/); // PDF の図の説明が差し込まれている
+
+  assert.equal(ddb.m.get('MIN#m1|MAT#001').outlineStatus, 'done');
+  assert.ok(t.puts.has('minutes/m1/materials/m001.outline.json'));
+
+  const meta = ddb.m.get('MIN#m1|META');
+  assert.equal(meta.status, 'done');
+  assert.equal(meta.summary.version, 2);
+  assert.equal(meta.summary.withMaterials, true);
+  assert.deepEqual(meta.summary.materialIds, ['m001', 'm002']);
+  assert.equal(meta.summary.previousKey, 'minutes/m1/summary-v1.md');
+  assert.equal(meta.summary.previousWithMaterials, false);
+  assert.match(t.puts.get('minutes/m1/summary-v2.md').toString(), /資料に沿った議事録/);
+  const mapping = JSON.parse(t.puts.get(meta.summary.mappingKey).toString());
+  // 存在しない資料番号は捨て、時刻と confidence は整う
+  assert.deepEqual(mapping.map((m) => [m.material, m.start, m.confidence]), [[1, '00:00:10', 'high'], [2, '00:01:00', 'medium']]);
+  assert.equal(t.usage.length, 1);
+  assert.equal(t.usage[0].kind, 'summarize');
+  assert.equal(t.usage[0].retry, true);
+});
+
+test('資料つき: PDF の目次化が失敗しても議事録は作られる（その資料は名前だけ）', async () => {
+  const ddb = fakeDdb(materialSeed());
+  const { t, calls } = materialDeps(ddb, { pdfOk: false });
+  const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
+  assert.equal(r.ok, true);
+  assert.equal(ddb.m.get('MIN#m1|MAT#001').outlineStatus, 'failed');
+  assert.equal(ddb.m.get('MIN#m1|META').status, 'done');
+  assert.equal(ddb.m.get('MIN#m1|META').summary.withMaterials, true);
+  const prompt = calls.filter((c) => !c.pdf).at(-1).prompt;
+  assert.match(prompt, /提案書\.pdf/);
+  assert.match(prompt, /目次なし/);
+});
+
+test('資料つきでない議事録の作り直しは資料の印を外し、前の版の印を残す', async () => {
+  const s = materialSeed();
+  s[0].summary = { key: 'minutes/m1/summary-v2.md', version: 2, withMaterials: true, materialIds: ['m001'], mappingKey: 'minutes/m1/summary-mapping-v2.json' };
+  const ddb = fakeDdb(s);
+  const { t } = materialDeps(ddb, { pdfOk: true });
+  await runMinutes({ minuteId: 'm1', target: 'summary' }, t.deps);
+  const sm = ddb.m.get('MIN#m1|META').summary;
+  assert.equal(sm.withMaterials, false);
+  assert.equal(sm.previousWithMaterials, true);
+  assert.equal(sm.previousMappingKey, 'minutes/m1/summary-mapping-v2.json');
+});

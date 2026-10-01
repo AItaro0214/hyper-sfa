@@ -55,6 +55,39 @@ function cardView(c) {
 }
 const norm = (s) => String(s || '').normalize('NFKC').toLowerCase();
 
+// 議事録 1 件（資料の確認用）。再作成は 3 秒ごとに 目次 → 資料を踏まえて作成 → 完了 と進む。
+const MATS = [{ id: 'mat1', seq: 1, name: '提案書_v3.pdf', kind: 'pdf', size: 2400000, pages: 18, outlineStatus: 'done', uploadedBy: { id: 'u1', name: '山田 管理' }, uploadedAt: new Date().toISOString() }];
+const MIN = { job: null, withMaterials: false, summaryVersion: 1, summaryMd: '## 要点\n- 見積りの提示\n- 来月の再訪が決定' };
+const MIN_TRANSCRIPT = ['[00:00:05] 本日はありがとうございます。', '[00:05:30] まず売上の推移です。', '[00:12:10] 地域別では関西が伸びています。', '[00:18:40] 次にご提案の内容です。', '[00:30:00] 以上です。'].join('\n');
+const MIN_MAPPING = () => [
+  { material: 'mat1', materialName: '提案書_v3.pdf', page: 7, start: '00:12:10', end: '00:18:40', confidence: 'high' },
+  { material: 'mat1', materialName: '提案書_v3.pdf', page: 9, start: '00:18:40', end: '00:29:00', confidence: 'low' },
+];
+function minuteView() {
+  if (MIN.job) {
+    const dt = Date.now() - MIN.job.at;
+    if (dt > 6000 || (dt > 3000 && !MIN.job.withMaterials)) {
+      MIN.withMaterials = MIN.job.withMaterials;
+      MIN.summaryVersion++;
+      MIN.summaryMd = MIN.withMaterials
+        ? '## 要点\n- 資料を踏まえた要点\n## 資料に沿った話の内容\n### 提案書_v3.pdf  スライド 7「地域別売上」（00:12:10〜00:18:40）\n- 関西が前年比で伸びている'
+        : '## 要点\n- 作り直した版';
+      MIN.job = null;
+    }
+  }
+  const dt = MIN.job ? Date.now() - MIN.job.at : 0;
+  const step = !MIN.job ? undefined : MIN.job.withMaterials ? (dt < 3000 ? 'outline' : 'summarize_materials') : 'summarize';
+  return {
+    id: 'm1', title: 'サンプル商談（モック）', heldAt: new Date().toISOString(), mode: 'web', durationSec: 1800, memo: '', status: MIN.job ? 'summarizing' : 'done', progress: step ? { step } : null, failure: null,
+    owner: { id: 'u1', name: '山田 管理' }, relation: 'owner', counterparts: [{ cardId: null, company: '株式会社サンプル', department: '', name: '田中 太郎', cardVisible: false }],
+    attendees: [], shares: [], audio: { available: false, deleted: true },
+    transcript: { version: 1, createdAt: new Date().toISOString(), modelId: 'mock', hasPrevious: false },
+    summary: { version: MIN.summaryVersion, createdAt: new Date().toISOString(), modelId: 'mock', hasPrevious: MIN.summaryVersion > 1, withMaterials: MIN.withMaterials, materialIds: MATS.map((x) => x.id) },
+    materials: MATS.filter((x) => !x.pending),
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  };
+}
+
 async function api(req, res, url) {
   const p = url.pathname, m = req.method, q = url.searchParams;
   const body = ['POST', 'PUT', 'PATCH'].includes(m) ? await readBody(req) : {};
@@ -119,7 +152,46 @@ async function api(req, res, url) {
     }
     if (!sub && m === 'DELETE') { CARDS.splice(CARDS.indexOf(c), 1); return send(res, 204); }
   }
-  if (p === '/api/minutes') return send(res, 200, { items: [], nextCursor: null });
+  // ---- 議事録と資料（メモリ上。PUT は受けるだけ） ----
+  if (p === '/api/minutes' && m === 'GET') return send(res, 200, { items: [minuteView()], nextCursor: null });
+  if ((g = p.match(/^\/api\/minutes\/m1(\/.*)?$/))) {
+    const sub = g[1] || '';
+    let h;
+    if (!sub && m === 'GET') return send(res, 200, minuteView());
+    if (!sub && m === 'DELETE') return send(res, 204);
+    if (sub === '/transcript') return send(res, 200, { text: MIN_TRANSCRIPT, version: 1 });
+    if (sub === '/summary') { minuteView(); return send(res, 200, { markdown: MIN.summaryMd, version: MIN.summaryVersion, withMaterials: MIN.withMaterials, ...(MIN.withMaterials ? { mapping: MIN_MAPPING() } : {}) }); }
+    if (sub === '/audio-url') return err(res, 404, 'not_found', '音声は削除されました');
+    if (sub === '/materials' && m === 'GET') return send(res, 200, { items: MATS });
+    if (sub === '/materials' && m === 'POST') {
+      if (MATS.length >= 5) return err(res, 400, 'validation', '資料は 5 件までです');
+      if (body.size > 20 * 1024 * 1024) return err(res, 400, 'validation', '20MB までです');
+      const seq = (MATS.length ? MATS[MATS.length - 1].seq : 0) + 1;
+      const mat = { id: `mat${seq}`, seq, name: body.name, kind: body.kind, size: body.size, pages: null, outlineStatus: 'none', uploadedBy: { id: 'u1', name: '山田 管理' }, uploadedAt: new Date().toISOString(), pending: true };
+      MATS.push(mat);
+      return send(res, 200, { id: mat.id, seq, file: { url: `/mock-upload/mat/${mat.id}`, method: 'PUT', headers: {} }, extract: body.hasExtract ? { url: `/mock-upload/mat/${mat.id}.extract`, method: 'PUT', headers: {} } : null });
+    }
+    if ((h = sub.match(/^\/materials\/([^/]+)\/done$/)) && m === 'PUT') {
+      const mat = MATS.find((x) => x.id === h[1]);
+      if (!mat) return err(res, 404, 'not_found', '資料がありません');
+      delete mat.pending;
+      mat.pages = body.pages ?? (mat.kind === 'pdf' ? 18 : null);
+      mat.outlineStatus = mat.kind === 'pdf' ? 'pending' : 'none';
+      return send(res, 200, mat);
+    }
+    if ((h = sub.match(/^\/materials\/([^/]+)\/url$/))) {
+      const mat = MATS.find((x) => x.id === h[1]);
+      return mat ? send(res, 200, { url: '/mock-img/material', expiresAt: new Date(Date.now() + 300000).toISOString(), filename: mat.name }) : err(res, 404, 'not_found', '資料がありません');
+    }
+    if ((h = sub.match(/^\/materials\/([^/]+)$/)) && m === 'DELETE') { const i = MATS.findIndex((x) => x.id === h[1]); if (i >= 0) MATS.splice(i, 1); return send(res, 204); }
+    if (sub === '/regenerate' && m === 'POST') {
+      if (body.withMaterials && !MATS.length) return err(res, 400, 'validation', '資料がありません');
+      MIN.job = { at: Date.now(), withMaterials: !!body.withMaterials };
+      return send(res, 202, {});
+    }
+    if (sub === '/generate' && m === 'POST') return send(res, 202, {});
+    return err(res, 404, 'not_found', `モックに無い API: ${m} ${p}`);
+  }
   if (p === '/api/admin/users' && m === 'GET') return send(res, 200, { items: USERS });
   if (p === '/api/admin/users' && m === 'POST') { USERS.push({ id: `u${USERS.length + 1}`, loginId: body.loginId, email: body.email, displayName: body.displayName, position: body.position, role: body.role, deptIds: [], departments: [], status: 'invited' }); return send(res, 200, { tempPassword: 'Tmp-Pass-1234' }); }
   if ((g = p.match(/^\/api\/admin\/users\/([^/]+)$/)) && m === 'PATCH') { const u = USERS.find((x) => x.id === g[1]); if (u) { Object.assign(u, body); if (body.deptIds) u.departments = body.deptIds.map((id) => DEPTS.find((d) => d.id === id)).filter(Boolean); } return send(res, 200, u || {}); }

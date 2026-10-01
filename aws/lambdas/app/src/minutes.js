@@ -1,6 +1,6 @@
 // 議事録の API（docs/api-contract.md §7、docs/minutes-design.md §8〜§11）。
 // 議事録を見られるのは作った人と共有された人だけ。役職は関係ない（§8）。範囲の外は 404。
-import { ulid, normalizeText, DEFAULT_MODELS } from '@hyper-sfa/core';
+import { ulid, normalizeText, DEFAULT_MODELS, MATERIAL_LIMITS, materialKindOf } from '@hyper-sfa/core';
 import {
   ddb, K, s3, invokeAsync, audit, recordUsage, getSelection,
   notFound, forbidden, conflict, validation, readJson, parseLimit, encodeCursor, decodeCursor,
@@ -26,12 +26,43 @@ function audioState(meta) {
 
 const ref = (v) => (v ? { version: v.version ?? 1, createdAt: v.createdAt ?? null, modelId: v.modelId ?? null, hasPrevious: Boolean(v.previousKey) } : null);
 
+// 資料を踏まえた版かどうか。古い議事録には項目が無いので false 扱い
+const summaryRef = (v) => (v ? { ...ref(v), withMaterials: Boolean(v.withMaterials), materialIds: v.materialIds ?? [] } : null);
+
+const MATERIAL_MIMES = {
+  pdf: 'application/pdf',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+const PENDING_UPLOAD_MS = 3600 * 1000;
+const matId = (seq) => `m${String(seq).padStart(3, '0')}`;
+
+/** 送り終えた資料だけを API の形にする。送っている途中（state: pending）は見せない。 */
+function presentMaterial(m) {
+  return {
+    id: m.id,
+    seq: m.seq,
+    name: m.name,
+    kind: m.kind,
+    size: m.size ?? 0,
+    pages: m.pages ?? null,
+    outlineStatus: m.outlineStatus ?? 'none',
+    uploadedBy: m.uploadedBy ?? { id: '', name: '' },
+    uploadedAt: m.uploadedAt ?? null,
+  };
+}
+
+async function loadMaterials(id, { all = false } = {}) {
+  const items = await ddb.queryAll({ pk: K.minute(id).pk, skPrefix: 'MAT#' });
+  return items.filter((m) => all || m.state === 'ready').sort((a, b) => a.seq - b.seq);
+}
+
 /**
  * @param {object} meta 議事録の META
  * @param {'owner'|'shared'} relation
  * @param {{ visibleCards?: Set<string>, shares?: Array }} [ctx]
  */
-function presentMinute(meta, relation, { visibleCards = new Set(), shares } = {}) {
+function presentMinute(meta, relation, { visibleCards = new Set(), shares, materials = [] } = {}) {
   const a = audioState(meta);
   const out = {
     id: meta.id,
@@ -55,7 +86,8 @@ function presentMinute(meta, relation, { visibleCards = new Set(), shares } = {}
     attendees: (meta.attendees ?? []).map((x) => ({ id: x.email, name: x.name ?? x.email })),
     audio: { available: a.available, expiresAt: meta.audioExpiresAt ?? null, deleted: a.deleted },
     transcript: ref(meta.transcript),
-    summary: ref(meta.summary),
+    summary: summaryRef(meta.summary),
+    materials: materials.map(presentMaterial),
     createdAt: meta.createdAt ?? null,
     updatedAt: meta.updatedAt ?? null,
   };
@@ -180,10 +212,11 @@ async function presentCopies(user, copies) {
   const metas = await ddb.batchGet(copies.map((cp) => K.minute(cp.id)));
   const byId = new Map(metas.map((m) => [m.id, m]));
   const visible = await visibleCardIds(user, metas.flatMap((m) => (m.counterparts ?? []).map((x) => x.cardId)));
+  const mats = new Map(await Promise.all(metas.map(async (m) => [m.id, await loadMaterials(m.id)])));
   return copies
     .map((cp) => {
       const m = byId.get(cp.id);
-      return m ? presentMinute(m, cp.relation, { visibleCards: visible }) : null;
+      return m ? presentMinute(m, cp.relation, { visibleCards: visible, materials: mats.get(m.id) }) : null;
     })
     .filter(Boolean);
 }
@@ -395,7 +428,7 @@ export function registerMinutesRoutes(app) {
     if (memo !== undefined) set.memo = memo;
     if (counterparts !== undefined) set.counterparts = counterparts;
     if (attendees !== undefined) set.attendees = attendees;
-    if (Object.keys(set).length === 0) return c.json(presentMinute(meta, 'owner', { shares: await presentShares(meta.id) }));
+    if (Object.keys(set).length === 0) return c.json(presentMinute(meta, 'owner', { shares: await presentShares(meta.id), materials: await loadMaterials(meta.id) }));
 
     const updated = await setMeta(meta, set);
     if (counterparts !== undefined) {
@@ -412,7 +445,7 @@ export function registerMinutesRoutes(app) {
     }
     await refreshCopies(updated);
     const visible = await visibleCardIds(user, (updated.counterparts ?? []).map((x) => x.cardId));
-    return c.json(presentMinute(updated, 'owner', { visibleCards: visible, shares: await presentShares(meta.id) }));
+    return c.json(presentMinute(updated, 'owner', { visibleCards: visible, shares: await presentShares(meta.id), materials: await loadMaterials(meta.id) }));
   });
 
   // 作成を始める。失敗した所からのやり直しも同じ（どこから続けるかは minutes Lambda が決める）
@@ -433,12 +466,16 @@ export function registerMinutesRoutes(app) {
     if (meta.status !== 'done' && meta.status !== 'failed') throw conflict('いまは作り直せません');
     if (b.target === 'summary' && !meta.transcript?.key) throw validation('文字起こしがまだありません');
     if (b.target === 'transcript' && audioState(meta).deleted) throw validation('音声は削除されたため、文字起こしからはやり直せません');
-    await queue(meta, b.target, ['done', 'failed']);
+    const withMaterials = b.target === 'summary' && b.withMaterials === true;
+    if (withMaterials && (await loadMaterials(meta.id)).length === 0) {
+      throw validation('資料がありません', [{ field: 'withMaterials', message: '先に資料を追加してください' }]);
+    }
+    await queue(meta, b.target, ['done', 'failed'], withMaterials ? { withMaterials: true } : {});
     return c.json({ status: 'queued' }, 202);
   });
 
   // 状態を「待ち」にして minutes Lambda を起こす。起こせなければ失敗に戻し、やり直せるようにする
-  async function queue(meta, target, fromStatuses) {
+  async function queue(meta, target, fromStatuses, extra = {}) {
     const updated = await setMeta(meta, { status: 'queued', failure: null }, {
       condition: '#st IN (' + fromStatuses.map((_, i) => `:f${i}`).join(', ') + ')',
       names: { '#st': 'status' },
@@ -449,7 +486,7 @@ export function registerMinutesRoutes(app) {
     });
     await refreshCopies(updated);
     try {
-      await invokeAsync('MINUTES_FUNCTION_NAME', { minuteId: meta.id, target });
+      await invokeAsync('MINUTES_FUNCTION_NAME', { minuteId: meta.id, target, ...extra });
     } catch (e) {
       console.error('minutes invoke failed', e?.name);
       const failed = await setMeta(meta, {
@@ -476,9 +513,18 @@ export function registerMinutesRoutes(app) {
       previousKey: cur.key,
       previousVersion: cur.version ?? 1,
     };
+    if (b.target === 'summary') {
+      // 資料を踏まえた版かどうかと対応表も、本文と一緒に入れ替える
+      next.withMaterials = Boolean(cur.previousWithMaterials);
+      next.materialIds = cur.previousMaterialIds ?? [];
+      next.mappingKey = cur.previousMappingKey ?? null;
+      next.previousWithMaterials = Boolean(cur.withMaterials);
+      next.previousMaterialIds = cur.materialIds ?? [];
+      next.previousMappingKey = cur.mappingKey ?? null;
+    }
     const updated = await setMeta(meta, { [b.target]: next });
     const visible = await visibleCardIds(user, (updated.counterparts ?? []).map((x) => x.cardId));
-    return c.json(presentMinute(updated, 'owner', { visibleCards: visible, shares: await presentShares(meta.id) }));
+    return c.json(presentMinute(updated, 'owner', { visibleCards: visible, shares: await presentShares(meta.id), materials: await loadMaterials(meta.id) }));
   });
 
   app.get('/api/minutes', async (c) => {
@@ -500,7 +546,7 @@ export function registerMinutesRoutes(app) {
     const { meta, relation } = await access(user, c.req.param('id'));
     const visible = await visibleCardIds(user, (meta.counterparts ?? []).map((x) => x.cardId));
     const shares = relation === 'owner' ? await presentShares(meta.id) : undefined;
-    return c.json(presentMinute(meta, relation, { visibleCards: visible, shares }));
+    return c.json(presentMinute(meta, relation, { visibleCards: visible, shares, materials: await loadMaterials(meta.id) }));
   });
 
   async function readText(bucketKey) {
@@ -522,8 +568,21 @@ export function registerMinutesRoutes(app) {
   app.get('/api/minutes/:id/summary', async (c) => {
     const { meta } = await access(me(c), c.req.param('id'));
     if (!meta.summary?.key) throw notFound('議事録はまだありません');
-    return c.json({ markdown: await readText(meta.summary.key), version: meta.summary.version ?? 1 });
+    const out = { markdown: await readText(meta.summary.key), version: meta.summary.version ?? 1, withMaterials: Boolean(meta.summary.withMaterials), mapping: [] };
+    if (meta.summary.withMaterials && meta.summary.mappingKey) {
+      // 対応表が読めなくても議事録は返す（画面は対応表なしで出せる）
+      try {
+        const rows = JSON.parse(await readText(meta.summary.mappingKey));
+        const names = new Map((await loadMaterials(meta.id, { all: true })).map((m) => [m.seq, m.name]));
+        out.mapping = (Array.isArray(rows) ? rows : []).map((r) => ({ ...r, materialName: names.get(r.material) ?? '' }));
+      } catch (e) {
+        console.error('mapping read failed', e?.name);
+      }
+    }
+    return c.json(out);
   });
+
+  registerMaterialRoutes(app);
 
   app.get('/api/minutes/:id/audio-url', async (c) => {
     const { meta } = await access(me(c), c.req.param('id'));
@@ -583,9 +642,11 @@ export function registerMinutesRoutes(app) {
     if (['queued', 'transcribing', 'summarizing'].includes(meta.status)) throw conflict('作成中は削除できません。終わってからお試しください');
     const shares = await shareItems(meta.id);
     const segs = await ddb.queryAll({ pk: meta.pk, skPrefix: 'SEG#' });
+    const mats = await loadMaterials(meta.id, { all: true });
     const keys = [
       K.minute(meta.id),
       ...segs.map((s) => ({ pk: s.pk, sk: s.sk })),
+      ...mats.map((m) => ({ pk: m.pk, sk: m.sk })),
       ...shares.map((s) => ({ pk: s.pk, sk: s.sk })),
       K.userMinute(meta.ownerEmail, meta.heldAt, meta.id),
       ...shares.map((s) => K.userMinute(String(s.sk).slice('SHARE#'.length), meta.heldAt, meta.id)),
@@ -594,7 +655,7 @@ export function registerMinutesRoutes(app) {
     for (let i = 0; i < keys.length; i += 25) {
       await Promise.all(keys.slice(i, i + 25).map((k) => ddb.del(k.pk, k.sk)));
     }
-    // 音声と文章も消す（使った記録は減らさない。費用は既にかかっているため）
+    // 音声と文章（資料の元ファイル、抜いた JSON、目次、対応表も同じ接頭辞の下）も消す（使った記録は減らさない。費用は既にかかっているため）
     const prefix = `minutes/${meta.id}/`;
     const [audio, data] = await Promise.all([s3.listPrefix({ bucket: 'audio', prefix }), s3.listPrefix({ bucket: 'data', prefix })]);
     await Promise.all([
@@ -603,5 +664,121 @@ export function registerMinutesRoutes(app) {
     ]);
     await audit(user, 'minute.delete', { minuteId: meta.id });
     return c.json({ ok: true });
+  });
+}
+
+// ---- 資料（docs/minutes-design.md §15、api-contract.md「資料」） ----
+
+function registerMaterialRoutes(app) {
+  const me = (c) => c.get('auth').user;
+  const base = (id) => `minutes/${id}/materials/`;
+
+  async function loadMaterial(meta, matIdParam) {
+    const m = /^m(\d{3})$/.exec(String(matIdParam ?? ''));
+    if (!m) throw notFound('資料が見つかりません');
+    const k = K.minuteMaterial(meta.id, Number(m[1]));
+    const item = await ddb.get(k.pk, k.sk);
+    if (!item) throw notFound('資料が見つかりません');
+    return item;
+  }
+
+  async function removeFiles(item) {
+    await Promise.all([item.key, item.extractKey, item.outlineKey].filter(Boolean).map((key) => s3.deleteObject({ bucket: 'data', key })));
+  }
+
+  app.get('/api/minutes/:id/materials', async (c) => {
+    const { meta } = await access(me(c), c.req.param('id'));
+    return c.json({ items: (await loadMaterials(meta.id)).map(presentMaterial) });
+  });
+
+  app.post('/api/minutes/:id/materials', async (c) => {
+    const user = me(c);
+    const meta = await ownerAccess(user, c.req.param('id'));
+    const b = await readJson(c);
+    const errors = [];
+    const name = typeof b.name === 'string' ? b.name.replace(/[\r\n]/g, ' ').trim().slice(0, 200) : '';
+    if (!name) errors.push({ field: 'name', message: 'ファイル名が必要です' });
+    const kind = materialKindOf(name);
+    if (!MATERIAL_LIMITS.kinds.includes(b.kind) || (name && kind !== b.kind)) {
+      errors.push({ field: 'kind', message: 'PDF / pptx / xlsx だけ追加できます。古い形式（.ppt / .xls）は保存し直してください' });
+    }
+    if (!Number.isInteger(b.size) || b.size < 1 || b.size > MATERIAL_LIMITS.maxBytes) {
+      errors.push({ field: 'size', message: `1 件 ${MATERIAL_LIMITS.maxBytes / 1024 / 1024}MB までです` });
+    }
+    if (errors.length) throw validation('入力を確かめてください', errors);
+
+    // 送りかけで止まったものは 1 時間たてば片付ける。数に数え続けると、5 件の枠が埋まったままになるため
+    const stale = (x) => x.state !== 'ready' && Date.now() - Date.parse(x.uploadedAt ?? 0) > PENDING_UPLOAD_MS;
+    const existing = await loadMaterials(meta.id, { all: true });
+    for (const m of existing.filter(stale)) {
+      await removeFiles(m);
+      await ddb.del(m.pk, m.sk);
+    }
+    const all = existing.filter((x) => !stale(x));
+    if (all.length >= MATERIAL_LIMITS.maxFiles) {
+      throw validation(`資料は 1 つの議事録に ${MATERIAL_LIMITS.maxFiles} 件までです`, [{ field: 'name', message: '先に不要な資料を削除してください' }]);
+    }
+
+    // 番号は欠番を埋めずに増やす。消した資料の ID を再利用すると、古い対応表が別の資料を指してしまうため
+    const seq = existing.reduce((mx, m) => Math.max(mx, m.seq ?? 0), 0) + 1;
+    const id = matId(seq);
+    const hasExtract = kind !== 'pdf' && b.hasExtract !== false;
+    const key = `${base(meta.id)}${id}.${kind}`;
+    const extractKey = hasExtract ? `${base(meta.id)}${id}.extract.json` : null;
+    await ddb.put({
+      ...K.minuteMaterial(meta.id, seq),
+      id, seq, name, kind, size: b.size, pages: null, key, extractKey, outlineKey: null,
+      outlineStatus: 'none', state: 'pending',
+      uploadedBy: { id: user.id, name: user.displayName ?? user.id }, uploadedAt: nowIso(),
+    }, { condition: 'attribute_not_exists(pk)' });
+    const mime = MATERIAL_MIMES[kind];
+    const file = { url: await s3.presignPut({ bucket: 'data', key, contentType: mime, expiresSec: 900 }), method: 'PUT', headers: { 'Content-Type': mime } };
+    const extract = extractKey
+      ? { url: await s3.presignPut({ bucket: 'data', key: extractKey, contentType: 'application/json', expiresSec: 900 }), method: 'PUT', headers: { 'Content-Type': 'application/json' } }
+      : null;
+    return c.json({ id, seq, file, extract });
+  });
+
+  app.put('/api/minutes/:id/materials/:matId/done', async (c) => {
+    const meta = await ownerAccess(me(c), c.req.param('id'));
+    const item = await loadMaterial(meta, c.req.param('matId'));
+    const b = await readJson(c);
+    const head = await s3.headObject({ bucket: 'data', key: item.key });
+    if (!head) throw validation('アップロードが完了していません');
+    if (head.size > MATERIAL_LIMITS.maxBytes) {
+      await removeFiles(item);
+      await ddb.del(item.pk, item.sk);
+      throw validation(`1 件 ${MATERIAL_LIMITS.maxBytes / 1024 / 1024}MB までです`);
+    }
+    let extractKey = null;
+    if (item.extractKey) {
+      const eh = b.extracted === false ? null : await s3.headObject({ bucket: 'data', key: item.extractKey });
+      if (eh && eh.size <= MATERIAL_LIMITS.maxExtractBytes) extractKey = item.extractKey;
+      else await s3.deleteObject({ bucket: 'data', key: item.extractKey }).catch(() => {});
+    }
+    const pages = Number.isInteger(b.pages) && b.pages > 0 && b.pages < 10000 ? b.pages : null;
+    // PDF だけモデルで目次にする。pptx / xlsx は抜いた JSON から機械的に作る（§15.4）
+    const set = { state: 'ready', size: head.size, extractKey, pages, outlineStatus: item.kind === 'pdf' ? 'pending' : 'none' };
+    await ddb.update(item.pk, item.sk, { set });
+    return c.json(presentMaterial({ ...item, ...set }));
+  });
+
+  app.delete('/api/minutes/:id/materials/:matId', async (c) => {
+    const meta = await ownerAccess(me(c), c.req.param('id'));
+    if (['queued', 'transcribing', 'summarizing'].includes(meta.status)) throw conflict('作成中は削除できません。終わってからお試しください');
+    const item = await loadMaterial(meta, c.req.param('matId'));
+    // 目次のキーは処理側が後から書くので、DynamoDB に無くても決まった名前で消す
+    await removeFiles({ ...item, outlineKey: item.outlineKey ?? `${base(meta.id)}${item.id}.outline.json` });
+    await ddb.del(item.pk, item.sk);
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/minutes/:id/materials/:matId/url', async (c) => {
+    const { meta } = await access(me(c), c.req.param('id'));
+    const item = await loadMaterial(meta, c.req.param('matId'));
+    if (item.state !== 'ready') throw notFound('資料が見つかりません');
+    const expiresSec = 3600;
+    const url = await s3.presignGet({ bucket: 'data', key: item.key, expiresSec, filename: item.name });
+    return c.json({ url, expiresAt: new Date(Date.now() + expiresSec * 1000).toISOString(), filename: item.name });
   });
 }

@@ -10,6 +10,7 @@ import {
 } from './util.js';
 import { openShareDialog } from './share.js';
 import { mountPeopleEditor, peopleToPayload } from './pickers.js';
+import { renderMaterials } from './materials.js';
 
 const POLL_MS = 3000;
 const GIVE_UP_MS = 20 * 60 * 1000; // api-contract §8: 20 分で失敗扱い
@@ -50,7 +51,7 @@ export function renderDetail(container, params) {
     }
   }
   function signature(x) {
-    return JSON.stringify([x.status, x.title, x.durationSec, x.memo, x.counterparts, x.attendees, x.shares, x.audio, x.summary && x.summary.version, x.transcript && x.transcript.version, x.failure]);
+    return JSON.stringify([x.status, x.title, x.durationSec, x.memo, x.counterparts, x.attendees, x.shares, x.audio, x.materials, x.summary && x.summary.version, x.summary && x.summary.withMaterials, x.transcript && x.transcript.version, x.failure]);
   }
   function schedule() {
     stop();
@@ -84,6 +85,7 @@ export function renderDetail(container, params) {
       ${own ? '<div><button class="mn-btn mn-btn-sm" data-edit>相手・同席者・メモを直す</button></div>' : ''}
       <div data-r="progress"></div>
       ${failedByTimeout ? `<div class="mn-alert mn-alert-error">20 分たっても進まないため、失敗として扱います。${own ? '<button class="mn-btn" data-retry>もう一度試す</button>' : ''}</div>` : ''}
+      ${m.status === 'recording' ? '' : '<div data-r="materials"></div>'}
       <div class="mn-tabs" role="tablist">
         ${[['summary', '議事録'], ['transcript', '文字起こし'], ['audio', '音声']].map(([k, l]) => `<button role="tab" class="mn-tab${tab === k ? ' on' : ''}" data-tab="${k}">${l}</button>`).join('')}
       </div>
@@ -91,6 +93,8 @@ export function renderDetail(container, params) {
       <div data-r="actions" class="mn-actions"></div>
     </div>`;
     paintProgress();
+    const matBox = container.querySelector('[data-r=materials]');
+    if (matBox) renderMaterials(matBox, m, { onChanged: () => { pollStart = 0; return load({ quiet: true }); } });
     paintBody();
     paintActions();
   }
@@ -107,7 +111,7 @@ export function renderDetail(container, params) {
     } else if (m.status === 'failed') {
       const f = m.failure || {};
       const text = f.kind === 'not_configured' ? '設定に問題があります。開発者に連絡してください。' : (f.message || 'うまくいきませんでした。');
-      box.innerHTML = `<div class="mn-alert mn-alert-error"><strong>${f.step === 'summarize' ? '議事録の作成' : '文字起こし'}に失敗しました。</strong><div>${esc(text)}</div>
+      box.innerHTML = `<div class="mn-alert mn-alert-error"><strong>${f.step === 'outline' ? '資料の目次作成' : f.step === 'summarize' ? '議事録の作成' : '文字起こし'}に失敗しました。</strong><div>${esc(text)}</div>
         <div class="mn-muted">録音は保存されています。</div>
         ${isOwner() && f.retryable !== false && f.kind !== 'not_configured' ? '<button class="mn-btn mn-btn-primary" data-retry>もう一度試す</button>' : ''}</div>`;
     } else if (m.status === 'uploaded') {
@@ -129,9 +133,7 @@ export function renderDetail(container, params) {
     }
     const render = () => {
       if (tab !== mine || !body.isConnected) return;
-      body.innerHTML = mine === 'summary'
-        ? `<div class="mn-md">${renderMarkdown(cache.summary.markdown)}</div>`
-        : `<pre class="mn-transcript">${esc(cache.transcript.text)}</pre>`;
+      body.innerHTML = mine === 'summary' ? summaryHtml(cache.summary) : transcriptHtml(cache.transcript.text);
     };
     if (cache[mine] && cache[mine].version === has.version) return render();
     body.innerHTML = '<p class="mn-muted">読み込んでいます…</p>';
@@ -141,6 +143,50 @@ export function renderDetail(container, params) {
     } catch (e) {
       if (tab === mine && body.isConnected) body.innerHTML = `<p class="mn-error">${esc(errMessage(e))}</p>`;
     }
+  }
+
+  // 資料を踏まえた版は印を付け、対応表（資料のページ → 時刻）を議事録の下に出す
+  function summaryHtml(sum) {
+    const withMat = sum.withMaterials ?? (m.summary && m.summary.withMaterials);
+    const mapping = Array.isArray(sum.mapping) ? sum.mapping : [];
+    const kindOf = (mid) => { const x = (m.materials || []).find((y) => y.id === mid || y.seq === mid); return x && x.kind; };
+    const pageLabel = (r) => (kindOf(r.material) === 'pptx' ? `スライド ${r.page}` : `${r.page} ページ`);
+    const table = mapping.length ? `<div class="mn-map"><h3>資料と話の対応</h3><div class="mn-map-scroll"><table class="mn-table">
+      <thead><tr><th>資料</th><th>ページ</th><th>時刻</th><th>確信度</th></tr></thead><tbody>
+      ${mapping.map((r) => `<tr><td>${esc(r.materialName || '')}</td><td>${esc(pageLabel(r))}</td>
+        <td><button type="button" class="mn-link" data-seek="${esc(r.start)}">${esc(r.start)}</button>〜${esc(r.end || '')}</td>
+        <td>${r.confidence === 'low' ? '<span class="mn-faint">推定</span>' : ''}</td></tr>`).join('')}
+      </tbody></table></div></div>` : '';
+    return `${withMat ? '<p><span class="mn-badge mn-badge-mat">資料を踏まえた版</span></p>' : ''}<div class="mn-md">${renderMarkdown(sum.markdown)}</div>${table}`;
+  }
+
+  // 各行の [HH:MM:SS] を秒に直して data-sec に持たせる。対応表から飛ぶとき、一番近い行を探すため
+  function transcriptHtml(text) {
+    const lines = String(text || '').split('\n').map((line, i) => {
+      const t = /\[(\d{1,2}):(\d{2}):(\d{2})\]/.exec(line);
+      const sec = t ? Number(t[1]) * 3600 + Number(t[2]) * 60 + Number(t[3]) : null;
+      return `<span class="mn-tl" id="tl-${i}"${sec === null ? '' : ` data-sec="${sec}"`}>${esc(line)}\n</span>`;
+    });
+    return `<pre class="mn-transcript">${lines.join('')}</pre>`;
+  }
+
+  async function seekTranscript(clockText) {
+    const t = /(\d{1,2}):(\d{2}):(\d{2})/.exec(clockText || '');
+    if (!t) return;
+    const target = Number(t[1]) * 3600 + Number(t[2]) * 60 + Number(t[3]);
+    tab = 'transcript';
+    container.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === 'transcript'));
+    paintActions();
+    await paintBody();
+    let best = null; let diff = Infinity;
+    container.querySelectorAll('.mn-tl[data-sec]').forEach((e) => {
+      const d = Math.abs(Number(e.dataset.sec) - target);
+      if (d < diff) { diff = d; best = e; }
+    });
+    if (!best) { toast('文字起こしに時刻の付いた行がありません', 'error'); return; }
+    best.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    best.classList.add('mn-flash');
+    setTimeout(() => best.classList.remove('mn-flash'), 2500);
   }
 
   async function paintAudio(body) {
@@ -192,6 +238,7 @@ export function renderDetail(container, params) {
   container.addEventListener('click', async (e) => {
     const t = e.target.closest('button, a');
     if (!t) return;
+    if (t.dataset.seek) { seekTranscript(t.dataset.seek); return; }
     if (t.dataset.tab) { tab = t.dataset.tab; container.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b === t)); paintBody(); paintActions(); return; }
     if (t.hasAttribute('data-share')) { openShareDialog(m, () => load({ quiet: true })); return; }
     if (t.hasAttribute('data-edit')) { openEdit(); return; }

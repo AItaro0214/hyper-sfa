@@ -76,12 +76,79 @@ const SUMMARIZE = `あなたは議事録の担当です。会議の文字起こ�
 # 文字起こし
 {{TRANSCRIPT}}`;
 
-export const DEFAULT_PROMPTS = Object.freeze({ card: CARD, transcribe: TRANSCRIBE, summarize: SUMMARIZE });
+const OUTLINE = `あなたは会議資料の目次を作る担当です。渡された資料（{{NAME}}、形式: {{KIND}}）を、ページごとに目次にしてください。
+
+# 決まり
+- ページ番号（page）は、PDF のページ順（先頭が 1）です。資料の中に印字されたページ番号ではありません。
+- title は、そのページの見出しです。見出しが無いときは、内容を表す短い題を付けます。
+- summary は、そのページに書かれている要点を 2〜4 文で書きます。
+- figures には、図、表、グラフの説明文を必ず書きます。種類（棒グラフ、折れ線グラフ、表など）、横軸と縦軸、読み取れる値や傾向を書きます。例: 「棒グラフ: 横軸は地域、関東 120 / 関西 95 / 九州 40。関西だけ前年比で伸びている」。会議で「この伸びが」としか言われなくても、この説明から対応するページが分かるようにするためです。
+- イラスト、写真、背景、罫線などの装飾は無視します。内容に関係する図だけを書きます。
+- keywords には、会社名、人名、製品名、数値の項目名などの固有名詞を最大 10 個入れます。
+- 書かれていないことを補わないでください。読み取れない値は書かず、読み取れないと書きます。
+- 全ページを漏らさず、ページ順に出してください。
+
+# 返し方
+- JSON だけを返してください。説明、前置き、コードブロックの記号は付けないでください。`;
+
+const SUMMARIZE_MATERIALS = `あなたは議事録の担当です。会議で使った資料の目次と、会議の文字起こし（時刻付き）を読み、議事録と、資料と時刻の対応表を作ってください。
+
+# 会議の情報
+- タイトル: {{TITLE}}
+- 日時: {{DATE}}
+- 相手: {{COUNTERPARTS}}
+- 自社の同席者: {{ATTENDEES}}
+- メモ: {{MEMO}}
+
+# 資料の目次
+{{MATERIALS}}
+
+# 決まり
+- 話は資料の順に進むことが多いので、対応付けの手がかりにします。ただし順が前後することもあります。
+- 資料に無い話が続く区間は、無理に資料のページへ対応付けません。「資料に無かった話題」に書きます。
+- 確信が持てない対応は confidence を low にします。確信がある対応は high、そのどちらでもなければ medium です。
+- 文字起こしに書かれていないことを補わないでください。資料の内容は、文字起こしで話題になった範囲で使います。
+- 金額、日付、数量、固有名詞は、文字起こしと資料のとおりに書きます。
+- 誰の発言かがはっきりしない内容は、人を決めつけずに書きます。
+- グラフや図の内容は、資料の目次にある説明を使い、文字起こしの発言と結び付けて書きます。
+
+# 対応表（mapping）
+- 資料のページごとに、そのページの話をしていた時刻の範囲を出します。material は資料の番号、page はそのページ番号、start と end は HH:MM:SS です。
+- 1 つのページが複数の区間に分かれるときは、区間ごとに 1 行にします。
+
+# 議事録（markdown）の形
+## 要点
+## 資料に沿った話の内容
+### 資料名  スライド（ページ）番号「見出し」（開始〜終了の時刻）
+- 説明した内容、相手の質問と答え、決まったこと
+## 資料に無かった話題
+## 資料にあったが話していないページ
+## 決まったこと
+## これからやること
+担当、内容、期限。期限が話に出ていなければ「期限の話なし」。
+## 確認が必要なこと
+持ち帰りになったこと、相手の返事待ちのこと。
+
+# 返し方
+- {"mapping": [...], "markdown": "..."} の JSON だけを返してください。説明やコードブロックの記号は付けないでください。
+
+# 文字起こし
+{{TRANSCRIPT}}`;
+
+export const DEFAULT_PROMPTS = Object.freeze({
+  card: CARD,
+  transcribe: TRANSCRIBE,
+  summarize: SUMMARIZE,
+  outline: OUTLINE,
+  summarize_materials: SUMMARIZE_MATERIALS,
+});
 
 const COMMON = ['TITLE', 'DATE', 'COUNTERPARTS', 'ATTENDEES', 'MEMO'];
 export const PLACEHOLDERS = Object.freeze({
   transcribe: Object.freeze([...COMMON]),
   summarize: Object.freeze([...COMMON, 'TRANSCRIPT']),
+  summarize_materials: Object.freeze([...COMMON, 'MATERIALS', 'TRANSCRIPT']),
+  outline: Object.freeze(['NAME', 'KIND']),
 });
 
 /**

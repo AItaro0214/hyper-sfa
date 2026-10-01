@@ -121,7 +121,9 @@ resource "aws_dynamodb_table" "main" {
     type = "S"
   }
 
-  # 検索用の一覧。検索と一覧表示に使う項目だけを含める（rawText や extraction の細部は含めない）
+  # 検索用の一覧。検索と一覧表示に使う項目だけを含める。
+  # DynamoDB は INCLUDE の属性を 1 つの索引につき 20 個までしか持てないので、一覧に出さないもの
+  # （備考、表と裏の画像のキー、編集・読み取りの回数、extraction など）は外してある。詳細は META を読む
   global_secondary_index {
     name            = "gsi1"
     hash_key        = "gsi1pk"
@@ -129,10 +131,10 @@ resource "aws_dynamodb_table" "main" {
     projection_type = "INCLUDE"
     non_key_attributes = [
       "id", "status", "company", "department", "name", "nameReading",
-      "phones", "mobiles", "emails", "note", "keys", "deptIds",
-      "imageFrontKey", "imageBackKey", "thumbKey", "failure", "deletedAt",
-      "createdBy", "createdByName", "createdByPosition", "createdByDeptIds", "createdAt",
-      "updatedBy", "updatedByName", "updatedAt", "editCount", "scanCount", "version", "extraction",
+      "phones", "mobiles", "emails", "keys", "deptIds",
+      "thumbKey", "failure", "deletedAt",
+      "createdBy", "createdByName", "createdAt",
+      "updatedByName", "updatedAt", "version",
     ]
   }
 

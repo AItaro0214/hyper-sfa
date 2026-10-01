@@ -239,6 +239,19 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 
 抜いた JSON（`extract`）の形は minutes-design.md §15.3、目次の形は §15.4、対応表と議事録の JSON は §15.5。
 
+### 質問（minutes-design.md §16）
+
+議事録を見られる人が使える。スレッドは利用者ごと。
+
+| メソッドとパス | 内容 |
+| --- | --- |
+| `GET /api/minutes/{id}/chat` | 自分のスレッド。`{ "items": [{ "seq", "role": "user" | "assistant", "text", "modelId", "createdAt" }], "modelLabel": "Gemini 3.6 Flash", "available": true }`。`available` は文字起こしがあるとき `true` |
+| `POST /api/minutes/{id}/chat` | `{ "text" }`（2,000 字まで）→ `{ "question": { "seq", "role": "user", ... }, "answer": { "seq", "role": "assistant", "text", "modelId", "createdAt" }, "usage": { "inputTokens", "outputTokens" } }`。同期。文字起こしが無ければ `validation`。1 日 200 回を超えたら `rate_limited`。モデル側の失敗は `provider_error` |
+| `DELETE /api/minutes/{id}/chat` | 自分のスレッドを消す |
+| `PUT /api/dev/model` | `use` に `qa` を足す |
+| `GET /api/dev/prompts/{kind}` ほか | `kind` に `qa` を足す |
+| `GET /api/dev/usage/minutes` | 各行に `"qa": { "count" }` を足す |
+
 ## 8. 画面の状態確認
 
 | 画面 | 方法 |

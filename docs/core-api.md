@@ -171,3 +171,11 @@ parseResponsesResponse(json)   // → { text（output_text を連結）, finishR
 ```
 
 Gemini は既存の `buildGenerateRequest` に `parts: [{ fileData: { mimeType: 'application/pdf', fileUri } }]` と `schema` を渡せば足りる。
+
+## 15. 質問（`qa`）— 2026-10-01 追加
+
+- `DEFAULT_PROMPTS.qa`、`PLACEHOLDERS.qa = ['TITLE', 'DATE', 'COUNTERPARTS', 'ATTENDEES', 'MEMO', 'MATERIALS', 'TRANSCRIPT']`（minutes-design.md §16.1 の「答え方」をプロンプトに書く）。
+- `DEFAULT_SELECTION.qa`（初期値は `summarize` と同じ）。文章モデルの `uses` に `'qa'` を足す（Gemini の Flash / Pro、OpenAI の文章モデル。文字起こし専用のモデルには足さない）。
+- `gemini.js`: `buildChatGenerateRequest({ model, apiKey, systemText, turns: [{ role: 'user' | 'assistant', text }], thinkingLevel, maxOutputTokens })` → `systemInstruction` と `contents`（`role` は `user` / `model`）。応答は既存の `parseGenerateResponse`。
+- `openai.js`: `buildResponsesRequest` に `turns`（`[{ role, text }]`）を渡せるようにする（`input` が `[{ role: 'user' | 'assistant', content: [{ type: 'input_text' | 'output_text', text }] }]` の列になる）。
+- `qa.js`: `buildQaContext({ transcript, materials, minute })` → `{ TITLE, DATE, COUNTERPARTS, ATTENDEES, MEMO, MATERIALS, TRANSCRIPT }`（`formatMaterialsForPrompt` を使う）。`trimTurns(turns, max = 20)`。

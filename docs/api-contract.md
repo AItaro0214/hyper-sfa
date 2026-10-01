@@ -222,6 +222,23 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 
 `audio-url` の `url` は `<audio src>` と `<a download>` の両方に使える。
 
+### 資料（minutes-design.md §15）
+
+議事録の形に `"materials": [{ "id", "seq", "name", "kind": "pdf" | "pptx" | "xlsx", "size", "pages", "outlineStatus": "pending" | "done" | "failed" | "none", "uploadedBy": { "id", "name" }, "uploadedAt" }]` を足す。`summary` に `"withMaterials": false, "materialIds": []` を足す。
+
+| メソッドとパス | 内容 |
+| --- | --- |
+| `GET /api/minutes/{id}/materials` | `{ "items": [...] }` |
+| `POST /api/minutes/{id}/materials` | `{ "name", "kind", "size", "hasExtract": true }` → `{ "id", "seq", "file": { "url", "method": "PUT", "headers" }, "extract": { "url", "method": "PUT", "headers" } または null }`。作った人だけ。6 件目や 20MB 超は `validation`。`kind` は拡張子から画面が決める |
+| `PUT /api/minutes/{id}/materials/{matId}/done` | `{ "pages"?, "extracted": true または false }`。送り終えた印。PDF は `outlineStatus: pending`、pptx / xlsx は `none`（目次は機械的に作るため） |
+| `DELETE /api/minutes/{id}/materials/{matId}` | 作った人だけ。ファイルと抜いた JSON と目次を消す |
+| `GET /api/minutes/{id}/materials/{matId}/url` | `{ "url", "expiresAt", "filename" }`。見られる人。元のファイルを開く / ダウンロードする |
+| `POST /api/minutes/{id}/regenerate` | `{ "target": "summary", "withMaterials": true }` を足す。資料が 0 件なら `validation` |
+| `GET /api/minutes/{id}/summary` | `{ "markdown", "version", "withMaterials", "mapping": [{ "material", "materialName", "page", "start", "end", "confidence" }] }`。`mapping` は資料を踏まえた版だけ |
+| `GET /api/dev/prompts/{kind}` ほか | `kind` に `outline` と `summarize_materials` を足す |
+
+抜いた JSON（`extract`）の形は minutes-design.md §15.3、目次の形は §15.4、対応表と議事録の JSON は §15.5。
+
 ## 8. 画面の状態確認
 
 | 画面 | 方法 |

@@ -140,3 +140,34 @@ truncate(s, max)
 ## テスト
 
 `packages/core/test/*.test.js`、`node --test`（引数なし。Node 24 では `node --test test/` が使えない）。特に `extractJson` は崩れた応答の見本（`test/fixtures/gemini-*.txt`）を 10 種類以上そろえる。
+
+## 13. 資料（`materials.js`）— 2026-10-01 追加
+
+```js
+MATERIAL_LIMITS            // { maxFiles: 5, maxBytes: 20 * 1024 * 1024, maxExtractBytes: 2 * 1024 * 1024, kinds: ['pdf', 'pptx', 'xlsx'] }
+materialKindOf(filename)   // 拡張子 → 'pdf' | 'pptx' | 'xlsx' | null
+OUTLINE_SCHEMA             // 目次の JSON スキーマ（minutes-design.md §15.4）。type は小文字で書く。Gemini に渡すときは gemini.js 側で大文字にする
+MATERIAL_SUMMARY_SCHEMA    // { mapping: [...], markdown } のスキーマ（§15.5）
+outlineFromExtract(extract, { name })  // pptx / xlsx の抜いた JSON → 目次（モデルを使わない）。グラフは「系列 × 項目 = 値」の表の文字列にして figures に入れる
+formatMaterialsForPrompt([{ seq, name, kind, outline }]) // {{MATERIALS}} に差し込む文字列。「資料 1: 提案書_v3.pdf」「  ページ 7「地域別売上」 … figures …」の形。1 資料 3 万字で切る
+normalizeMapping(mapping, materials) // モデルの出力を整える（page を整数に、時刻を HH:MM:SS に、confidence を high/medium/low に、無い資料番号は捨てる）
+```
+
+`prompts.js` に `DEFAULT_PROMPTS.outline` と `DEFAULT_PROMPTS.summarize_materials` を足す（文面は minutes-design.md §15.4 / §15.5 の方針で書く）。`PLACEHOLDERS.summarize_materials = ['TITLE', 'DATE', 'COUNTERPARTS', 'ATTENDEES', 'MEMO', 'MATERIALS', 'TRANSCRIPT']`。`PLACEHOLDERS.outline = ['NAME', 'KIND']`。
+
+## 14. OpenAI の追加（`openai.js`）
+
+```js
+buildOpenAIFileUploadRequest({ apiKey, filename, contentType, purpose = 'user_data' })
+// /v1/files の multipart。本文は呼び出し側が作る（Worker ではストリームで組み立てるため）。
+// → { url, method, headers（Authorization と Content-Type（boundary 込み））, boundary, prefix: Uint8Array, suffix: Uint8Array }
+//   本文 = prefix + ファイルのバイト列 + suffix
+parseOpenAIFileResponse(json)  // → { id, bytes }
+buildOpenAIFileDeleteRequest({ apiKey, fileId })
+buildResponsesRequest({ model, apiKey, instructions, parts, jsonSchema, schemaName, maxOutputTokens, reasoningEffort })
+// /v1/responses。parts: [{ type: 'input_text', text } | { type: 'input_file', fileId }]。
+// jsonSchema があれば text.format = { type: 'json_schema', name: schemaName, schema: jsonSchema, strict: false }
+parseResponsesResponse(json)   // → { text（output_text を連結）, finishReason（status と incomplete_details.reason）, usage: { inputTokens, outputTokens } }
+```
+
+Gemini は既存の `buildGenerateRequest` に `parts: [{ fileData: { mimeType: 'application/pdf', fileUri } }]` と `schema` を渡せば足りる。

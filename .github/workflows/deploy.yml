@@ -1,0 +1,112 @@
+# AWS 版のデプロイ。main への push で Terraform apply と web の同期、PR では plan だけ。
+#
+# 動く条件（GitHub の Settings > Secrets and variables > Actions）:
+#   Variables: DEPLOY_ENABLED=true, AWS_ROLE_ARN, ALLOWED_HD, INITIAL_DEVELOPER_EMAIL, TF_STATE_BUCKET
+#   Secrets:   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+# DEPLOY_ENABLED が true でなければ何もしない（準備中に push しても壊れない）。
+# AWS 側の土台（状態のバケット、OIDC のロール）は aws/infra/bootstrap/github-deploy.yaml で先に作る。
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+# 同時に 2 つ走らせない（Terraform の状態を取り合わない）
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-1
+  TF_ENV: prod
+
+jobs:
+  deploy:
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build:aws
+
+      # ffmpeg（arm64 の静的ビルド）を Lambda レイヤーの zip にする。/opt/bin/ffmpeg になる
+      - name: Cache ffmpeg layer
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: aws/infra/ffmpeg-arm64-layer.zip
+          key: ffmpeg-arm64-static-release-v1
+      - name: Build ffmpeg layer
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/ffmpeg.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz
+          mkdir -p /tmp/ffmpeg && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1
+          mkdir -p /tmp/layer/bin && cp /tmp/ffmpeg/ffmpeg /tmp/layer/bin/ffmpeg && chmod +x /tmp/layer/bin/ffmpeg
+          (cd /tmp/layer && zip -qr "$GITHUB_WORKSPACE/aws/infra/ffmpeg-arm64-layer.zip" bin)
+          ls -la aws/infra/ffmpeg-arm64-layer.zip
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: aws/infra
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=${TF_ENV}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: Terraform plan
+        working-directory: aws/infra
+        env:
+          TF_VAR_env: ${{ env.TF_ENV }}
+          TF_VAR_google_client_id: ${{ secrets.GOOGLE_CLIENT_ID }}
+          TF_VAR_google_client_secret: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          TF_VAR_allowed_hd: ${{ vars.ALLOWED_HD }}
+          TF_VAR_initial_developer_email: ${{ vars.INITIAL_DEVELOPER_EMAIL }}
+          TF_VAR_ffmpeg_layer_zip: ${{ github.workspace }}/aws/infra/ffmpeg-arm64-layer.zip
+          TF_VAR_enable_inbound_federation_trigger: ${{ vars.ENABLE_INBOUND_FEDERATION_TRIGGER || 'false' }}
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform apply
+        if: github.event_name == 'push'
+        working-directory: aws/infra
+        run: terraform apply -input=false tfplan
+
+      - name: Sync web to S3 and invalidate CloudFront
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          export WEB_BUCKET="$(terraform -chdir=aws/infra output -raw web_bucket)"
+          export DISTRIBUTION_ID="$(terraform -chdir=aws/infra output -raw cloudfront_distribution_id)"
+          bash aws/scripts/sync-web.sh
+
+      - name: Show outputs
+        if: github.event_name == 'push'
+        working-directory: aws/infra
+        run: |
+          echo "## デプロイ結果" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          terraform output >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

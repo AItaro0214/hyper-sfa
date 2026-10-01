@@ -114,3 +114,21 @@ bash aws/scripts/sync-web.sh
 | auth | DynamoDB のユーザーの読み取りと、ログイン日時の記録だけ |
 | scan | DynamoDB の読み書き、画像バケットの読み取り、API キーの読み取り |
 | minutes | DynamoDB の読み書き、音声・文章バケットの読み書き、API キーの読み取り |
+
+## デプロイの仕組み（2026-10-01 に追加）
+
+main への push で GitHub Actions（`.github/workflows/deploy.yml`）が Terraform apply と web の同期を行う。PR では plan だけ。
+
+1. **土台（1 回だけ、手元の AWS CLI で）**: `aws/infra/bootstrap/github-deploy.yaml` を CloudFormation で作る。Terraform の状態を置く S3 バケットと、GitHub Actions が OIDC で引き受けるロールができる。
+   ```sh
+   aws cloudformation deploy --stack-name hyper-sfa-bootstrap \
+     --template-file aws/infra/bootstrap/github-deploy.yaml \
+     --capabilities CAPABILITY_NAMED_IAM --parameter-overrides GitHubRepo=Assist-inc-net/SFA
+   ```
+   Windows の AWS CLI は日本語コメント入りのファイルを cp932 で読んで失敗することがある。その場合は非 ASCII の行を除いた写しを作って渡す。
+2. **GitHub の Variables**: `AWS_ROLE_ARN`、`TF_STATE_BUCKET`、`ALLOWED_HD`、`INITIAL_DEVELOPER_EMAIL`、`DEPLOY_ENABLED`（`true` で有効）。**Secrets**: `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`。
+3. Google Cloud の OAuth クライアント（ユーザーの種類は「内部」）の「承認済みのリダイレクト URI」に、Cognito のドメイン `/oauth2/idpresponse` を登録する。ドメインは `https://hyper-sfa-<env>-<account>.auth.ap-northeast-1.amazoncognito.com`（Terraform の出力 `google_redirect_uri` にも出る）。
+4. `DEPLOY_ENABLED=true` にして main に push する。
+5. 初回の apply 後、Terraform の出力 `manual_steps` にある Cognito の Inbound federation トリガーを手動で設定し、`ENABLE_INBOUND_FEDERATION_TRIGGER=true` にする。
+
+手元で Terraform を回すときは、`terraform init` に `-backend-config` でバケット名・キー・リージョンを渡す（`versions.tf` のコメント）。

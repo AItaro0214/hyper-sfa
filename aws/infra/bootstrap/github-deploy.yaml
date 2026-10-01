@@ -1,0 +1,136 @@
+# GitHub Actions からデプロイするための土台。Terraform より先に、AWS CLI（CloudFormation）で 1 回だけ作る。
+#
+#   aws cloudformation deploy --stack-name hyper-sfa-bootstrap \
+#     --template-file aws/infra/bootstrap/github-deploy.yaml \
+#     --capabilities CAPABILITY_NAMED_IAM \
+#     --parameter-overrides GitHubRepo=Assist-inc-net/SFA
+#
+# 作るもの:
+#   - Terraform の状態を置く S3 バケット（バージョニング、暗号化、公開ブロック。ロックは Terraform 1.10 以降の use_lockfile）
+#   - GitHub Actions が引き受ける IAM ロール（OIDC。既存の token.actions.githubusercontent.com プロバイダーを使う）
+#
+# ロールの権限は PowerUserAccess + IAM の一部（hyper-sfa-* の名前に限る）。Terraform が作るリソースの種類が多いので
+# 最小権限を列挙するより、IAM だけを名前で絞る形にしている。
+AWSTemplateFormatVersion: '2010-09-09'
+Description: hyper-sfa - Terraform state bucket and GitHub Actions deploy role
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: Assist-inc-net/SFA
+    Description: owner/repo。この repo の main ブランチと PR だけがロールを引き受けられる
+  Project:
+    Type: String
+    Default: hyper-sfa
+
+Resources:
+  StateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${Project}-terraform-state-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-state-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Project}-github-deploy'
+      Description: GitHub Actions (OIDC) が Terraform と web の同期に使う
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub 'repo:${GitHubRepo}:ref:refs/heads/main'
+                  - !Sub 'repo:${GitHubRepo}:pull_request'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      Policies:
+        - PolicyName: iam-for-project-roles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Lambda の実行ロールなど、プロジェクト名で始まるものだけ
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListInstanceProfilesForRole
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PassRole
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${Project}-*'
+              - Effect: Allow
+                Action:
+                  - iam:CreatePolicy
+                  - iam:DeletePolicy
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:ListPolicyVersions
+                  - iam:CreatePolicyVersion
+                  - iam:DeletePolicyVersion
+                  - iam:TagPolicy
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:policy/${Project}-*'
+              # Cognito が Lambda トリガーを呼ぶためのサービスリンクロールなど
+              - Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                  - iam:ListRoles
+                  - iam:GetOpenIDConnectProvider
+                Resource: '*'
+        - PolicyName: terraform-state
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                Resource: !GetAtt StateBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub '${StateBucket.Arn}/*'
+
+Outputs:
+  StateBucketName:
+    Value: !Ref StateBucket
+  DeployRoleArn:
+    Value: !GetAtt DeployRole.Arn

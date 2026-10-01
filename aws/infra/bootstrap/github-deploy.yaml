@@ -17,8 +17,11 @@ Description: hyper-sfa - Terraform state bucket and GitHub Actions deploy role
 Parameters:
   GitHubRepo:
     Type: String
-    Default: Assist-inc-net/SFA
-    Description: owner/repo。この repo の main ブランチと PR だけがロールを引き受けられる
+    Default: Assist-inc-net@268491156/SFA@1399077053
+    Description: >-
+      OIDC の sub に入るリポジトリの表記。GitHub が「不変の subject」を使う設定のリポジトリでは
+      owner@ownerId/repo@repoId の形になる（gh api repos/OWNER/REPO/actions/oidc/customization/sub の
+      sub_claim_prefix から repo: を除いたもの）。従来の形なら owner/repo
   Project:
     Type: String
     Default: hyper-sfa

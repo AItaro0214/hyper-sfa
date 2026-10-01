@@ -17,3 +17,4 @@ Thumbs.db
 aws/lambdas/*/build/
 coverage/
 web/dev/samples/
+web/dev/shots/

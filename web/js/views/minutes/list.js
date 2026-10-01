@@ -2,6 +2,7 @@
 import { api } from '../../api.js';
 import { navigate } from '../../router.js';
 import { formatDateTime } from '../../ui.js';
+import { icon } from '../../icons.js';
 import { esc, statusChipHtml, clock, counterpartLabel, toQuery, itemsOf, errMessage, deptNames } from './util.js';
 import { pickCard, loadDirectory } from './pickers.js';
 import { checkRecovery } from '../../recorder/recovery.js';
@@ -21,7 +22,7 @@ export function renderList(container, _params, query = {}) {
 
   container.innerHTML = `
     <div class="mn-page">
-      <div class="mn-head"><h1>議事録</h1><a class="mn-btn mn-btn-primary" href="#" data-go="/minutes/new">🎙 議事録を作る</a></div>
+      <div class="mn-head"><h1>議事録</h1><a class="mn-btn mn-btn-primary" href="#" data-go="/minutes/new">${icon('mic', 18)}議事録を作る</a></div>
       ${hasActiveSession() ? '<div class="mn-alert mn-alert-warn">録音中です。<a href="/minutes/new">録音の画面に戻る</a></div>' : ''}
       <div class="mn-tabs" role="tablist">${TABS.map(([k, l]) => `<button role="tab" class="mn-tab" data-tab="${k}">${l}</button>`).join('')}</div>
       <form class="mn-search" data-f="search">
@@ -75,9 +76,9 @@ export function renderList(container, _params, query = {}) {
     chipsEl.innerHTML = c.length ? `<span class="mn-muted">絞り込み中:</span>${c.map(([k, t]) => `<span class="mn-tag">${esc(t)}<button type="button" data-clear="${k}" aria-label="この条件を外す">×</button></span>`).join('')}` : '';
   };
 
-  const rowHtml = (m) => {
+  const rowHtml = (m, i = -1) => {
     const people = (m.counterparts || []).map(counterpartLabel).join('、');
-    return `<a class="mn-row-item" href="#" data-go="/minutes/${esc(m.id)}">
+    return `<a class="mn-row-item" ${i >= 0 && i < 12 ? `style="--i:${i}" ` : ''}href="#" data-go="/minutes/${esc(m.id)}">
       <span class="mn-r-date">${esc(formatDateTime(m.heldAt))}</span>
       <span class="mn-r-title">${esc(m.title || '（無題）')}</span>
       <span class="mn-r-people">${esc(people)}</span>
@@ -88,7 +89,7 @@ export function renderList(container, _params, query = {}) {
 
   async function load(cursor) {
     const my = ++seq;
-    if (!cursor) resultsEl.innerHTML = '<p class="mn-muted">読み込んでいます…</p>';
+    if (!cursor) resultsEl.innerHTML = '<div aria-hidden="true">' + '<div class="skel mn-skel"></div>'.repeat(5) + '</div>';
     try {
       const r = await api.get('/api/minutes', toQuery({
         relation: f.relation, company: f.company, name: f.name, cardId: f.cardId, attendee: f.attendee,
@@ -97,9 +98,10 @@ export function renderList(container, _params, query = {}) {
       if (my !== seq || !container.isConnected) return;
       const items = itemsOf(r);
       const more = r && r.nextCursor;
-      const html = items.map(rowHtml).join('');
+      // 順に現れる演出は最初の読み込みの先頭 12 件だけ（続きの読み込みでは遅延なし）
+      const html = items.map((m, i) => rowHtml(m, cursor ? -1 : i)).join('');
       if (!cursor) {
-        resultsEl.innerHTML = items.length ? `<div class="mn-list">${html}</div>` : '<p class="mn-empty">該当する議事録はありません。</p>';
+        resultsEl.innerHTML = items.length ? `<div class="mn-list">${html}</div>` : '<p class="mn-empty">見つかりませんでした</p>';
       } else {
         resultsEl.querySelector('.mn-list')?.insertAdjacentHTML('beforeend', html);
         resultsEl.querySelector('[data-more-btn]')?.remove();

@@ -3,12 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>hyper-sfa</title>
+  <meta name="color-scheme" content="dark light">
+  <title>名刺とミーティング</title>
+  <link rel="icon" type="image/svg+xml" href="/img/logo.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;500;700&display=swap">
   <link rel="stylesheet" href="/css/app.css">
   <link rel="stylesheet" href="/css/minutes.css">
+  <script>
+    // 描き始める前にテーマを決める（ちらつき防止）。保存が無ければ OS の設定に従う。
+    try { var t = localStorage.getItem('theme'); if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
 </head>
 <body>
-  <div id="app"><p class="boot">読み込み中…</p></div>
+  <div id="progress" aria-hidden="true"></div>
+  <div id="app"><div class="boot"><span class="boot-dot"></span>読み込み中</div></div>
   <div id="toasts" aria-live="polite"></div>
   <script type="module" src="/js/main.js"></script>
 </body>

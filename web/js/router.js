@@ -45,10 +45,15 @@ async function run() {
     history.replaceState(null, '', redirect);
     return run();
   }
-  const container = containerFor(route);
-  container.replaceChildren();
-  window.scrollTo(0, 0);
-  afterNavigate(url.pathname);
+  // 画面の入れ替えだけを View Transition で包む（描画の待ち時間まで凍らせないため、描画本体は外に出す）。
+  // 未対応や「動きを減らす」設定のときは、CSS の enter アニメーションだけで切り替える。
+  let container;
+  const swap = () => { container = containerFor(route); container.replaceChildren(); window.scrollTo(0, 0); afterNavigate(url.pathname); };
+  const reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (document.startViewTransition && !reduced && document.getElementById('view')) {
+    try { await document.startViewTransition(swap).updateCallbackDone; } catch { if (!container) swap(); }
+  } else swap();
+  if (my !== token) return;
   const query = Object.fromEntries(url.searchParams);
   const result = await route.render(container, m ? m.params : {}, query);
   if (my === token) cleanup = result;

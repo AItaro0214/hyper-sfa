@@ -6,8 +6,8 @@ import { navigate } from '../router.js';
 
 export function renderPasswordChange(container) {
   const must = state.me && state.me.mustChangePassword;
-  container.innerHTML = `<div class="auth-card">
-    <h1>パスワードを変える</h1>
+  container.innerHTML = `<div class="auth-wrap"><div class="auth-card">
+    <h1 style="font-size:1.3rem;margin:0 0 8px">パスワードを変える</h1>
     ${must ? '<p class="muted">仮パスワードでログインしています。新しいパスワードを決めてください。</p>' : ''}
     <p class="alert alert-error" role="alert" id="err" hidden></p>
     <form id="f">
@@ -16,7 +16,7 @@ export function renderPasswordChange(container) {
       <label class="field"><span>新しいパスワード（確認）</span><input name="np2" type="password" autocomplete="new-password" minlength="10" required></label>
       <button class="btn btn-primary btn-block" type="submit">変更する</button>
       ${must ? '' : '<a class="btn btn-block" href="/">やめる</a>'}
-    </form></div>`;
+    </form></div></div>`;
   const form = container.querySelector('#f');
   const errBox = container.querySelector('#err');
   form.addEventListener('submit', async (e) => {

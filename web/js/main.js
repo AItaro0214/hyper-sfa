@@ -3,7 +3,9 @@ import { api, setUnauthorizedHandler } from './api.js';
 import { ensureLoggedIn, logout, handleCognitoCallback } from './auth.js';
 import { state } from './state.js';
 import { registerRoute, setGuard, setContainerProvider, onNavigated, navigate, start } from './router.js';
-import { esc, el, toast } from './ui.js';
+import { esc, el, toast, currentTheme, toggleTheme, APP_NAME } from './ui.js';
+import { icon, logoSvg } from './icons.js';
+
 import { renderLogin } from './views/login.js';
 import { renderSetup } from './views/setup.js';
 import { renderPasswordChange } from './views/password.js';
@@ -22,6 +24,12 @@ import { renderDevUsage } from './views/dev/usage.js';
 import { renderDevAudit } from './views/dev/audit.js';
 
 const app = document.getElementById('app');
+
+// ユーザーメニューの外を押したら閉じる（1 回だけ登録する）
+document.addEventListener('click', (e) => {
+  const d = document.querySelector('.usermenu');
+  if (d && d.open && !d.contains(e.target)) d.open = false;
+});
 
 // 議事録の画面は別ファイル。無くても名刺の画面は動かす。
 async function loadMinutes() {
@@ -75,23 +83,31 @@ function buildShell() {
   const c = state.me.capabilities || {};
   const f = state.config.features || {};
   const settings = c.admin ? '/admin/users' : c.dev ? '/developer/keys' : null;
+  const who = state.me.displayName || state.me.loginId || state.me.email || '';
+  const appName = state.config.appName || APP_NAME;
+  const themeLabel = () => (currentTheme() === 'dark' ? 'ライトにする' : 'ダークにする');
   const shell = el(`<div class="shell">
     <header class="topbar">
-      <a class="brand" href="/">${esc(state.config.appName || 'hyper-sfa')}</a>
-      <nav class="nav" aria-label="メイン">
-        <a href="/" data-nav="/">名刺を探す</a>
-        ${c.register ? '<a href="/cards/new" data-nav="/cards/new">登録</a>' : ''}
-        ${f.minutes ? '<a href="/minutes" data-nav="/minutes">議事録</a>' : ''}
-        ${settings ? `<a href="${settings}" data-nav="/admin /developer">${state.config.edition === 'cloudflare' ? '設定' : '管理'}</a>` : ''}
-      </nav>
-      <details class="usermenu"><summary>${esc(state.me.displayName || state.me.loginId || state.me.email)}</summary>
+      <a class="brand" href="/" aria-label="${esc(appName)}">${logoSvg(30)}<span class="brand-name">${esc(appName)}</span></a>
+      <details class="usermenu"><summary aria-label="アカウント"><span class="avatar">${esc([...who][0] || '?')}</span><span class="uname">${esc(who)}</span></summary>
         <div class="menu">
-          ${state.config.authMode === 'password' ? '<a href="/password">パスワードを変える</a>' : ''}
-          <button type="button" data-logout>ログアウト</button>
+          <button type="button" data-theme>${icon('settings')}<span data-theme-label>${themeLabel()}</span></button>
+          ${state.config.authMode === 'password' ? `<a href="/password">${icon('key')}パスワードを変える</a>` : ''}
+          <button type="button" data-logout>${icon('logout')}ログアウト</button>
         </div></details>
     </header>
+    <nav class="nav" aria-label="メイン">
+      <a href="/" data-nav="/">${icon('card', 22)}<span>名刺</span></a>
+      ${c.register ? `<a href="/cards/new" data-nav="/cards/new">${icon('camera', 22)}<span>登録</span></a>` : ''}
+      ${f.minutes ? `<a href="/minutes" data-nav="/minutes">${icon('mic', 22)}<span>議事録</span></a>` : ''}
+      ${settings ? `<a href="${settings}" data-nav="/admin /developer">${icon('settings', 22)}<span>${state.config.edition === 'cloudflare' ? '設定' : '管理'}</span></a>` : ''}
+    </nav>
     <main id="view"></main></div>`);
   shell.querySelector('[data-logout]').addEventListener('click', async () => { await logout(); navigate('/login'); });
+  shell.querySelector('[data-theme]').addEventListener('click', () => {
+    toggleTheme();
+    shell.querySelector('[data-theme-label]').textContent = themeLabel();
+  });
   app.replaceChildren(shell);
 }
 
@@ -126,7 +142,7 @@ async function boot() {
     app.innerHTML = `<div class="page"><h1>読み込めませんでした</h1><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">再読み込み</button></div>`;
     return;
   }
-  document.title = state.config.appName || 'hyper-sfa';
+  document.title = state.config.appName || APP_NAME;
   if (location.pathname === '/auth/callback') {
     const r = await handleCognitoCallback();
     if (!r.ok) {

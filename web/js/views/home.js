@@ -2,7 +2,8 @@
 // （入力のたびに全体を描くと日本語入力の変換が壊れるため）。
 import { api } from '../api.js';
 import { state } from '../state.js';
-import { esc, el, chip, toast, onTextInput, errorMessage } from '../ui.js';
+import { esc, el, chip, toast, onTextInput, errorMessage, skeletonRows } from '../ui.js';
+import { icon } from '../icons.js';
 import { STATUS_LABEL, mountCardForm, cardViewHtml, bindZoom } from './cardEdit.js';
 
 const FIELDS = [
@@ -21,15 +22,17 @@ export async function renderHome(container, _p, query, minutesMod) {
   for (const k of ['company', 'name', 'department', 'phone', 'email', 'note', 'owner', 'from', 'to', 'dept']) if (query[k]) cond[k] = query[k];
   let items = [], nextCursor = null, total = null, loading = false, seq = 0;
   let directory = [], depts = [];
+  let fresh = true; // 検索し直した直後の描画だけ、行を順に出す（「もっと見る」で再生し直さない）
 
   container.innerHTML = `<div class="page home">
-    <form class="search" novalidate>
+    <div class="page-head"><h1>名刺を探す</h1>${state.config.features.minutes ? '<div id="home-minutes"></div>' : ''}</div>
+    <form class="search" novalidate role="search">
       <div class="search-basic">
-        ${FIELDS.filter((f) => f.basic).map((f) => `<label class="field"><span>${f.label}</span><input type="search" name="${f.key}" value="${esc(cond[f.key] || '')}" autocomplete="off"></label>`).join('')}
-        <button type="submit" class="btn btn-primary">検索</button>
+        ${FIELDS.filter((f) => f.basic).map((f) => `<label class="field"><span>${f.label}</span><input type="search" name="${f.key}" value="${esc(cond[f.key] || '')}" autocomplete="off" enterkeyhint="search"></label>`).join('')}
+        <button type="submit" class="btn btn-primary">${icon('search')}検索</button>
       </div>
       <details class="more" ${Object.keys(cond).some((k) => !['company', 'name'].includes(k)) ? 'open' : ''}>
-        <summary>その他の条件で絞る</summary>
+        <summary>その他の条件</summary>
         <div class="search-more">
           ${FIELDS.filter((f) => !f.basic).map((f) => `<label class="field"><span>${f.label}</span><input type="search" name="${f.key}" value="${esc(cond[f.key] || '')}" autocomplete="off"></label>`).join('')}
           <label class="field"><span>登録者</span><select name="owner"><option value="">指定しない</option></select></label>
@@ -43,8 +46,7 @@ export async function renderHome(container, _p, query, minutesMod) {
     <div class="results" data-list></div>
     <div class="more-row"><button type="button" class="btn" data-more hidden>もっと見る</button></div>
     <div data-sentinel></div>
-    ${state.config.features.minutes ? '<div class="home-minutes" id="home-minutes"></div>' : ''}
-    <aside class="panel" data-panel hidden><div class="panel-head"><button type="button" class="btn" data-close>閉じる</button></div><div class="panel-body"></div></aside>
+    <aside class="panel" data-panel hidden><div class="panel-head"><button type="button" class="icon-btn" data-close aria-label="閉じる">${icon('close')}</button></div><div class="panel-body"></div></aside>
   </div>`;
 
   const form = container.querySelector('form.search');
@@ -85,23 +87,27 @@ export async function renderHome(container, _p, query, minutesMod) {
     box.innerHTML = depts.map((d) => `<button type="button" class="pill ${cond.dept === d.id ? 'on' : ''}" data-dept="${esc(d.id)}" aria-pressed="${cond.dept === d.id}">${esc(d.name)}</button>`).join('');
   }
 
-  function rowHtml(c) {
+  function rowHtml(c, i = -1) {
     const thumb = c.imageUrls && c.imageUrls.thumb;
     const canEdit = !!caps.editCards;
-    return `<article class="row" data-id="${esc(c.id)}">
-      <div class="row-thumb">${thumb ? `<img src="${esc(thumb)}" alt="" loading="lazy">` : ''}</div>
+    // 順に現れる演出は先頭 12 件まで。それ以上は遅延なし（i を付けない）
+    const anim = i >= 0 && i < 12 ? ` row-in" style="--i:${i}` : '';
+    const initial = [...String(c.company || c.name || '?')][0];
+    return `<article class="row${anim}" data-id="${esc(c.id)}">
+      <div class="row-thumb">${thumb ? `<img src="${esc(thumb)}" alt="" loading="lazy">` : `<span class="initial">${esc(initial)}</span>`}</div>
       <div class="row-main">
         <div class="row-company">${esc(c.company) || '<span class="muted">（会社名なし）</span>'} <span class="muted">${esc(c.department)}</span>
           ${c.status !== 'confirmed' ? `<span class="badge badge-${esc(c.status)}">${esc(STATUS_LABEL[c.status] || c.status)}</span>` : ''}</div>
         <div class="row-name"><a href="/cards/${encodeURIComponent(c.id)}">${esc(c.name) || '（氏名なし）'}</a></div>
-        <div class="row-sub">${[...(c.phones || []), ...(c.mobiles || [])].map(esc).join(' / ')}</div>
+        <div class="row-sub mono">${[...(c.phones || []), ...(c.mobiles || [])].map((t) => `<span class="nw">${esc(t)}</span>`).join(' / ')}</div>
         <div class="row-sub">${(c.emails || []).map(esc).join(' / ')}</div>
       </div>
-      <div class="row-act">${canEdit ? '<button type="button" class="btn btn-small" data-edit>編集</button>' : '<button type="button" class="btn btn-small" data-view>表示</button>'}</div>
+      <div class="row-act">${canEdit ? `<button type="button" class="btn btn-small" data-edit aria-label="編集">${icon('edit', 18)}<span class="lbl">編集</span></button>` : `<button type="button" class="btn btn-small" data-view aria-label="表示">${icon('chevron', 18)}<span class="lbl">表示</span></button>`}</div>
     </article>`;
   }
   function renderList() {
-    listEl.innerHTML = items.map(rowHtml).join('') || (loading ? '' : '<p class="empty">名刺が見つかりません。</p>');
+    listEl.innerHTML = items.map((c, i) => rowHtml(c, fresh ? i : -1)).join('') || (loading ? '' : '<p class="empty">見つかりませんでした</p>');
+    fresh = false;
     countEl.textContent = total !== null ? `${total} 件` : '';
     moreBtn.hidden = !nextCursor;
   }
@@ -120,7 +126,7 @@ export async function renderHome(container, _p, query, minutesMod) {
   async function fetchPage(reset) {
     const my = ++seq;
     loading = true;
-    if (reset) { items = []; nextCursor = null; total = null; listEl.innerHTML = '<p class="muted">検索しています…</p>'; }
+    if (reset) { items = []; nextCursor = null; total = null; fresh = true; listEl.innerHTML = skeletonRows(5); }
     try {
       const r = await api.get('/api/cards', { ...cond, limit: 30, cursor: reset ? undefined : nextCursor });
       if (my !== seq) return;

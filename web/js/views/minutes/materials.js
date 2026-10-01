@@ -2,12 +2,13 @@
 // 追加の流れ: ファイルを選ぶ → ブラウザで展開（pptx / xlsx）→ 送り先を貰う → 元のファイルと抜いた JSON を PUT → done。
 import { api } from '../../api.js';
 import { toast } from '../../ui.js';
+import { icon } from '../../icons.js';
 import { extractMaterial, materialKind } from '../../materials/extract.js';
 import { esc, ask, errMessage, isProcessing } from './util.js';
 
 const MAX_FILES = 5;
 const MAX_BYTES = 20 * 1024 * 1024;
-const ICON = { pdf: '📄', pptx: '📽', xlsx: '📊' };
+const ICON = { pdf: icon('doc', 18), pptx: icon('screen', 18), xlsx: icon('doc', 18) };
 const OUTLINE = { pending: '目次: 作成待ち', done: '目次: 作成済み', failed: '目次: 失敗' };
 
 // 詳細画面が描き直されても、送信中の行が消えないように、議事録ごとに持っておく
@@ -45,14 +46,14 @@ export function renderMaterials(container, minute, { onChanged } = {}) {
       OUTLINE[mat.outlineStatus] || '',
     ].filter(Boolean).join('　');
     return `<li class="mn-mat-row" data-mat="${esc(mat.id)}">
-      <span class="mn-mat-icon" aria-hidden="true">${ICON[mat.kind] || '📎'}</span>
+      <span class="mn-mat-icon" aria-hidden="true">${ICON[mat.kind] || icon('doc', 18)}</span>
       <span class="mn-mat-name">${esc(mat.name)}</span>
       <span class="mn-muted mn-mat-meta${mat.outlineStatus === 'failed' ? ' mn-warn' : ''}">${esc(meta)}</span>
       <span class="mn-mat-btns"><button type="button" class="mn-btn mn-btn-sm" data-mat-open="${esc(mat.id)}">開く</button>
       ${own ? `<button type="button" class="mn-btn mn-btn-sm mn-btn-danger" data-mat-del="${esc(mat.id)}">削除</button>` : ''}</span>
     </li>`;
   }).join('');
-  const sending = Array.from(run.values()).map((r) => `<li class="mn-mat-row mn-mat-wait"><span class="mn-mat-icon" aria-hidden="true">⏳</span><span class="mn-mat-name">${esc(r.name)}</span><span class="mn-muted mn-mat-meta">${esc(r.text)}</span></li>`).join('');
+  const sending = Array.from(run.values()).map((r) => `<li class="mn-mat-row mn-mat-wait"><span class="mn-mat-icon" aria-hidden="true"><span class="spinner" style="width:16px;height:16px;border-width:2px;margin:0"></span></span><span class="mn-mat-name">${esc(r.name)}</span><span class="mn-muted mn-mat-meta">${esc(r.text)}</span></li>`).join('');
   const full = items.length + run.size >= MAX_FILES;
 
   container.innerHTML = `<section class="mn-mat">

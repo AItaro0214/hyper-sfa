@@ -4,6 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_MODELS } from '../../packages/core/src/models.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(here, '..');
@@ -32,11 +33,8 @@ const CARDS = Array.from({ length: 75 }, (_, i) => card(i + 1));
 const scans = new Map();
 let loggedIn = false;
 let devSettings = { keys: { gemini: { configured: true, last4: 'ab12', updatedAt: new Date().toISOString() }, openai: { configured: false } }, models: { card: 'gemini-3.5-flash-lite', transcribe: 'gemini-3.5-flash-lite', summarize: 'gemini-3.6-flash' }, prompts: {} };
-const MODELS = [
-  { id: 'gemini-3.5-flash-lite', provider: 'gemini', label: 'Gemini 3.5 Flash-Lite', uses: ['card', 'transcribe', 'summarize'], pricing: { input: 0.25, output: 1.5, audioInput: 0.5 }, active: true, builtin: true },
-  { id: 'gemini-3.6-flash', provider: 'gemini', label: 'Gemini 3.6 Flash', uses: ['card', 'summarize'], pricing: { input: 0.5, output: 3, changesAt: '2027-01-01', next: { input: 1, output: 6 } }, active: true, builtin: true },
-  { id: 'gemini-3.1-flash-lite', provider: 'gemini', label: 'Gemini 3.1 Flash-Lite', uses: ['card'], pricing: { input: 0.1, output: 0.4 }, shutdownAt: '2027-05-07', active: true, builtin: true },
-];
+// 一覧は共通ロジックの初期値をそのまま使う（tier / status / note もそのまま出る）。無効の例を 1 件足す
+const MODELS = [...DEFAULT_MODELS.map((m) => structuredClone(m)), { id: 'custom-test', provider: 'openai', label: 'カスタム試験モデル', uses: ['summarize'], pricing: { input: 1, output: 4 }, status: 'preview', note: '手で追加したモデル', active: false, builtin: false }];
 const PROMPTS = { card: 'カード用プロンプト', transcribe: '文字起こし用 {{TITLE}}', summarize: '議事録用 {{TRANSCRIPT}}' };
 const promptVer = { card: 1, transcribe: 1, summarize: 1 };
 
@@ -153,6 +151,13 @@ async function api(req, res, url) {
     if (!sub && m === 'DELETE') { CARDS.splice(CARDS.indexOf(c), 1); return send(res, 204); }
   }
   // ---- 議事録と資料（メモリ上。PUT は受けるだけ） ----
+  // 録音の画面の確認用: 作成と区切りのアップロードを受けるだけ
+  if (p === '/api/minutes' && m === 'POST') return send(res, 200, { id: 'rec1', segmentSec: 600 });
+  if ((g = p.match(/^\/api\/minutes\/rec1(\/.*)?$/))) {
+    if (/^\/segments$/.test(g[1] || '') && m === 'POST') return send(res, 200, { url: `/mock-upload/seg${body.seq}`, headers: {} });
+    return send(res, 200, {});
+  }
+  if (m === 'PUT' && p.startsWith('/mock-upload/')) return send(res, 200, {});
   if (p === '/api/minutes' && m === 'GET') return send(res, 200, { items: [minuteView()], nextCursor: null });
   if ((g = p.match(/^\/api\/minutes\/m1(\/.*)?$/))) {
     const sub = g[1] || '';
@@ -247,9 +252,11 @@ http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+    // 画面の確認用: ログイン済みにして / へ送る。?user=admin 以外は無い（ヘッドレスの撮影用）
+    if (url.pathname === '/dev/login-as') { loggedIn = true; res.writeHead(302, { 'Set-Cookie': 'sid=mock; Path=/; HttpOnly', Location: url.searchParams.get('to') || '/' }); return res.end(); }
     if (url.pathname.startsWith('/mock-upload/')) { req.resume(); return req.on('end', () => { res.writeHead(200); res.end(); }); }
     if (url.pathname === '/mock-export.csv') { res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8' }); return res.end('﻿id,name\r\nc1,田中\r\n'); }
-    if (url.pathname.startsWith('/mock-img/')) { res.writeHead(200, { 'Content-Type': 'image/svg+xml' }); return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" fill="#dfe8fb"/><text x="20" y="110" font-size="24">名刺サンプル</text></svg>'); }
+    if (url.pathname.startsWith('/mock-img/')) { res.writeHead(200, { 'Content-Type': 'image/svg+xml' }); return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2b2b33"/><stop offset="1" stop-color="#4a2a3c"/></linearGradient></defs><rect width="320" height="200" fill="url(#g)"/><rect x="20" y="20" width="36" height="4" fill="#ff2d8f"/><text x="20" y="60" font-size="16" fill="#f5f5f7" font-family="sans-serif">株式会社サンプル</text><text x="20" y="110" font-size="24" font-weight="700" fill="#fff" font-family="sans-serif">田中 太郎</text><text x="20" y="150" font-size="12" fill="#cfcfd6" font-family="monospace">03-1234-5678</text><text x="20" y="170" font-size="12" fill="#cfcfd6" font-family="monospace">taro@example.co.jp</text></svg>'); }
     if (url.pathname.startsWith('/core/')) { const f = inside(CORE, url.pathname.slice(5)); return f ? serveFile(res, f) : (res.writeHead(403), res.end()); }
     const f = url.pathname === '/' ? null : inside(WEB, url.pathname);
     if (f && fs.existsSync(f) && fs.statSync(f).isFile()) return serveFile(res, f);

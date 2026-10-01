@@ -5,6 +5,7 @@ import { api } from '../../api.js';
 import { state } from '../../state.js';
 import { navigate } from '../../router.js';
 import { toast } from '../../ui.js';
+import { icon } from '../../icons.js';
 import {
   startWebMeeting, startRoom, webMeetingUnavailableReason, roomUnavailableReason,
   explainMediaError, readLevel,
@@ -48,7 +49,7 @@ function paintChoose(view) {
   const room = roomUnavailableReason();
   const card = (kind, title, desc, reason) => `
     <button class="mn-kind" data-kind="${kind}" ${reason ? 'disabled' : ''}>
-      <strong>${title}</strong><span>${desc}</span>
+      ${icon(kind === 'web' ? 'screen' : 'mic', 40)}<strong>${title}</strong><span>${desc}</span>
       ${reason ? `<em class="mn-reason">${esc(reason)}</em>` : ''}
     </button>`;
   view.container.innerHTML = `<div class="mn-page mn-narrow">
@@ -99,7 +100,7 @@ function paintGuide(view, kind) {
 }
 
 async function startSession(kind) {
-  const s = { kind, phase: 'recording', view: null, flags: {}, info: null, lastSound: {}, startedAt: Date.now() };
+  const s = { kind, phase: 'recording', view: null, flags: {}, info: null, lastSound: {}, smooth: {}, startedAt: Date.now() };
   const lim = (state.config && state.config.limits) || {};
   const onEnded = () => { s.flags.shareEnded = true; refreshAlerts(); };
   const onMicEnded = () => { s.flags.micEnded = true; refreshAlerts(); };
@@ -154,8 +155,8 @@ function paintRecording(view) {
   view.container.innerHTML = `<div class="mn-page mn-narrow mn-rec">
     ${TELL}
     ${isWeb ? '' : '<div class="mn-mobile-note">画面をつけたままにしてください。画面が消えると録音が止まります。</div>'}
-    <div class="mn-rec-status"><span class="mn-dot" data-r="dot"></span><strong data-r="label">録音中</strong>
-      <span class="mn-time" data-r="elapsed">00:00</span><span class="mn-muted" data-r="remain"></span></div>
+    <div class="mn-orb-wrap"><div class="mn-orb" data-r="orb"><span class="mn-dot" data-r="dot"></span><span class="mn-time" data-r="elapsed">00:00</span></div></div>
+    <div class="mn-rec-status"><strong data-r="label">録音中</strong><span class="mn-muted" data-r="remain"></span></div>
     <div data-r="alerts"></div>
     <div class="mn-meters">
       ${isWeb ? '<div class="mn-meter"><span>パソコンの音</span><div class="mn-bar"><i data-r="m-system"></i></div></div>' : ''}
@@ -218,6 +219,7 @@ function updateLive() {
   q('[data-r=remain]').textContent = `（最長 ${clock(info.maxSec)}、残り ${clock(info.maxSec - info.elapsedSec)}）`;
   q('[data-r=label]').textContent = info.state === 'paused' ? '一時停止中' : info.state === 'interrupted' ? '中断しました' : '録音中';
   q('[data-r=dot]').classList.toggle('off', paused);
+  q('[data-r=orb]').classList.toggle('off', paused);
   q('[data-pause]').textContent = info.state === 'paused' || info.state === 'interrupted' ? '再開' : '一時停止';
   const upMin = Math.floor(info.uploadedSec / 60);
   q('[data-r=saved]').textContent = info.uploadedSec > 0 ? `${upMin} 分まで保存済み${info.pending ? `（送信待ち ${info.pending}）` : ''}` : '区切りができたら順に保存します。';
@@ -256,7 +258,11 @@ function meterLoop(view) {
       const bar = view.container.querySelector(`[data-r=m-${ch}]`);
       if (!an || !bar) continue;
       const lv = rec ? readLevel(an) : 0;
-      bar.style.width = `${Math.round(lv * 100)}%`;
+      // 上がるのは速く、下がるのはゆっくり。幅ではなく scaleX を動かすので再レイアウトが起きない
+      const prev = s.smooth[ch] || 0;
+      const sm = lv > prev ? prev + (lv - prev) * 0.5 : prev + (lv - prev) * 0.12;
+      s.smooth[ch] = sm;
+      bar.style.transform = `scaleX(${Math.min(1, sm).toFixed(3)})`;
       if (lv > 0.02 || !(ch in s.lastSound)) s.lastSound[ch] = now;
       // 30 秒ずっと無音なら知らせる。一時停止中は数えない
       if (!rec) s.lastSound[ch] = now;

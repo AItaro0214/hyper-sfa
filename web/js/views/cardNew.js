@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { esc, el, toast, confirmDialog, errorMessage } from '../ui.js';
+import { icon } from '../icons.js';
 import { prepareImages, uploadImages } from '../imageUtil.js';
 import { mountCardForm } from './cardEdit.js';
 
@@ -19,6 +20,13 @@ const FAIL_TEXT = {
   timeout: { msg: '読み取りに時間がかかりすぎています', retry: true },
 };
 
+// 上に出す 4 つの段階。now は 0 始まり。
+function stepsHtml(now) {
+  const L = ['読み込む', '待つ', '確かめる', '保存'];
+  const items = L.map((t, i) => `<li class="${i < now ? 'done' : i === now ? 'now' : ''}"${i === now ? ' aria-current="step"' : ''}><span class="n">${i < now ? icon('check', 13) : i + 1}</span><span class="t">${t}</span></li>`);
+  return `<ol class="steps" aria-label="進み具合">${items.map((h, i) => (i ? `<li class="line${i <= now ? ' done' : ''}" aria-hidden="true"></li>` : '') + h).join('')}</ol>`;
+}
+
 export function renderCardNew(container) {
   let stopped = false;
   const root = el('<div class="page narrow"></div>');
@@ -27,23 +35,23 @@ export function renderCardNew(container) {
 
   function stepPick(message) {
     let front = null, back = null;
-    root.innerHTML = `<h1>名刺を登録する</h1>
+    root.innerHTML = `<h1>名刺を登録する</h1>${stepsHtml(0)}
       ${message ? `<p class="alert alert-ok">${message}</p>` : ''}
       <p class="alert alert-error" data-err hidden></p>
-      <div class="pick">
+      <div class="pick step-in">
         <div class="pick-side"><h2>表面</h2>
           <img class="preview" data-prev="front" hidden alt="表面の写真">
-          <label class="btn btn-primary">撮影する<input type="file" accept="image/*" capture="environment" data-file="front" hidden></label>
+          <label class="btn btn-primary">${icon('camera')}撮影する<input type="file" accept="image/*" capture="environment" data-file="front" hidden></label>
           <label class="btn">写真を選ぶ<input type="file" accept="image/*" data-file="front" hidden></label>
         </div>
         <div class="pick-side"><h2>裏面（任意）</h2>
           <img class="preview" data-prev="back" hidden alt="裏面の写真">
-          <label class="btn">撮影する<input type="file" accept="image/*" capture="environment" data-file="back" hidden></label>
+          <label class="btn">${icon('camera')}撮影する<input type="file" accept="image/*" capture="environment" data-file="back" hidden></label>
           <label class="btn">写真を選ぶ<input type="file" accept="image/*" data-file="back" hidden></label>
           <button type="button" class="link" data-clear-back hidden>裏面を外す</button>
         </div>
       </div>
-      <div class="actions"><button type="button" class="btn btn-primary" data-go disabled>読み取る</button></div>`;
+      <div class="actions"><button type="button" class="btn btn-primary btn-lg" data-go disabled>${icon('search')}読み取る</button></div>`;
     const go = root.querySelector('[data-go]');
     const errBox = root.querySelector('[data-err]');
     root.querySelector('.pick').addEventListener('change', (e) => {
@@ -65,6 +73,7 @@ export function renderCardNew(container) {
       go.disabled = true;
       errBox.hidden = true;
       go.textContent = 'アップロードしています…';
+      go.insertAdjacentHTML('afterbegin', '<span class="spinner" style="width:18px;height:18px;border-width:2px;margin:0"></span>');
       try {
         const blobs = await prepareImages(front, back);
         const keys = await uploadImages(blobs);
@@ -77,7 +86,7 @@ export function renderCardNew(container) {
         errBox.textContent = errorMessage(e);
         errBox.hidden = false;
         go.disabled = false;
-        go.textContent = '読み取る';
+        go.innerHTML = `${icon('search')}読み取る`;
       }
     });
   }
@@ -85,10 +94,9 @@ export function renderCardNew(container) {
   // 1.5 秒おきに状態を見る。60 秒で「時間がかかっています」、120 秒で失敗扱い。
   function stepWait(id, previewUrl) {
     const started = Date.now();
-    root.innerHTML = `<h1>読み取っています</h1>
-      <div class="wait">${previewUrl ? `<img class="preview" src="${esc(previewUrl)}" alt="">` : ''}
-      <div class="spinner" aria-hidden="true"></div>
-      <p data-msg>読み取っています…（ふつうは数秒です）</p></div>`;
+    root.innerHTML = `<h1>読み取っています</h1>${stepsHtml(1)}
+      <div class="wait step-in"><div class="scan${previewUrl ? '' : ' noimg'}">${previewUrl ? `<img src="${esc(previewUrl)}" alt="">` : ''}</div>
+      <p data-msg style="margin-top:16px">読み取っています…（ふつうは数秒です）</p></div>`;
     const msg = root.querySelector('[data-msg]');
     const tick = async () => {
       if (stopped) return;
@@ -112,13 +120,13 @@ export function renderCardNew(container) {
   function stepFailed(id, failure) {
     const t = FAIL_TEXT[failure.kind] || { msg: failure.message || '読み取りに失敗しました', retry: failure.retryable };
     const retry = t.retry && failure.retryable !== false;
-    root.innerHTML = `<h1>読み取りに失敗しました</h1>
-      <p class="alert alert-error">${esc(t.msg)}</p>
+    root.innerHTML = `<h1>読み取りに失敗しました</h1>${stepsHtml(1)}
+      <div class="fail step-in"><p class="alert alert-warn alert-ic">${icon('warn')}<span>${esc(t.msg)}</span></p>
       <div class="actions">
-        ${retry ? '<button type="button" class="btn btn-primary" data-retry>もう一度読み取る</button>' : ''}
+        ${retry ? '<button type="button" class="btn btn-primary btn-lg" data-retry>もう一度読み取る</button>' : ''}
         ${t.redo || (!retry && !t.manual) ? '<button type="button" class="btn" data-again>撮り直す</button>' : ''}
         <button type="button" class="btn" data-manual>手で入力する</button>
-      </div>`;
+      </div></div>`;
     root.querySelector('[data-retry]')?.addEventListener('click', () => rescan(id));
     root.querySelector('[data-again]')?.addEventListener('click', () => stepPick());
     root.querySelector('[data-manual]').addEventListener('click', async () => {
@@ -134,7 +142,7 @@ export function renderCardNew(container) {
   }
 
   async function stepReview(card) {
-    root.innerHTML = '<h1>内容を確かめる</h1><div data-dup></div><div data-form></div>';
+    root.innerHTML = `<h1>内容を確かめる</h1>${stepsHtml(2)}<div data-dup></div><div class="step-in" data-form></div>`;
     const dups = card.duplicates || [];
     if (dups.length) {
       root.querySelector('[data-dup]').innerHTML = `<div class="alert alert-warn"><strong>似た名刺がすでにあります。</strong>

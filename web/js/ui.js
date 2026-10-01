@@ -1,4 +1,8 @@
 // 画面共通の小さな部品。外から来た文字列は必ず esc() を通す。
+import { icon } from './icons.js';
+
+// 設定に名前が無いときに画面へ出す名前
+export const APP_NAME = '名刺とミーティング';
 
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export function esc(s) {
@@ -16,7 +20,43 @@ export function toast(message, kind = 'info') {
   if (!box) return;
   const t = el(`<div class="toast toast-${esc(kind)}" role="status">${esc(message)}</div>`);
   box.appendChild(t);
-  setTimeout(() => t.remove(), kind === 'error' ? 6000 : 3500);
+  // 消えるときも動かすため、いったん out のクラスを付けてから外す
+  setTimeout(() => { t.classList.add('toast-out'); setTimeout(() => t.remove(), 220); }, kind === 'error' ? 6000 : 3500);
+}
+
+// 上端の進行バー。短い通信でちらつかないよう、150ms たってから出す。
+let inflight = 0, showTimer = 0;
+export function progressStart() {
+  inflight++;
+  if (inflight === 1) {
+    clearTimeout(showTimer);
+    showTimer = setTimeout(() => document.getElementById('progress')?.classList.add('on'), 150);
+  }
+}
+export function progressDone() {
+  inflight = Math.max(0, inflight - 1);
+  if (inflight === 0) {
+    clearTimeout(showTimer);
+    document.getElementById('progress')?.classList.remove('on');
+  }
+}
+
+// 読み込み中の骨組み。n 行ぶんの名刺カードの形をしたシマー。
+export function skeletonRows(n = 6) {
+  return Array.from({ length: n }, () => '<div class="skel-row" aria-hidden="true"><div class="skel skel-thumb"></div><div class="skel-lines"><div class="skel" style="width:55%"></div><div class="skel" style="width:35%"></div><div class="skel" style="width:70%"></div></div></div>').join('');
+}
+
+// テーマ（ダーク / ライト）。保存が無ければ OS の設定に従う。
+export function currentTheme() {
+  const t = document.documentElement.dataset.theme;
+  if (t === 'dark' || t === 'light') return t;
+  return window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+export function toggleTheme() {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('theme', next); } catch { /* 保存できなくても、このタブでは切り替わる */ }
+  return next;
 }
 
 // 日時は API が UTC で返すので、表示だけ日本時間に直す。
@@ -57,7 +97,7 @@ export function debounce(fn, ms = 300) {
 const stack = [];
 export function openModal(content, { title = '', wide = false, onClose } = {}) {
   const overlay = el(`<div class="modal-overlay"><div class="modal ${wide ? 'modal-wide' : ''}" role="dialog" aria-modal="true">
-    <div class="modal-head"><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-close aria-label="閉じる">×</button></div>
+    <div class="modal-head"><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-close aria-label="閉じる">${icon('close')}</button></div>
     <div class="modal-body"></div></div></div>`);
   const body = overlay.querySelector('.modal-body');
   if (typeof content === 'string') body.innerHTML = content; else body.appendChild(content);

@@ -13,5 +13,5 @@ export function settingsNav(active) {
   if (c.viewHistory) tabs.push(['/admin/history', '履歴']);
   if (c.admin && f.userImport) tabs.push(['/admin/import', 'CSV 一括登録']);
   if (c.dev) tabs.push(['/developer/keys', 'API キー'], ['/developer/models', 'モデル'], ['/developer/prompts', 'プロンプト'], ['/developer/export', 'CSV 出力'], ['/developer/usage', '利用状況'], ['/developer/audit', '監査ログ']);
-  return `<nav class="tabs" aria-label="設定">${tabs.map(([p, l]) => `<a href="${p}" class="${p === active ? 'active' : ''}">${esc(l)}</a>`).join('')}</nav>`;
+  return `<nav class="tabs settings-tabs" aria-label="設定">${tabs.map(([p, l]) => `<a href="${p}" class="${p === active ? 'active' : ''}">${esc(l)}</a>`).join('')}</nav>`;
 }

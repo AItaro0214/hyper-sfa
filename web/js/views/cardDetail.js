@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { esc, toast, confirmDialog, formatDate, formatDateTime, errorMessage } from '../ui.js';
 import { navigate } from '../router.js';
+import { icon } from '../icons.js';
 import { optimizeCardImages } from '../imageUtil.js';
 import { STATUS_LABEL, mountCardForm, cardViewHtml, bindZoom } from './cardEdit.js';
 
@@ -32,20 +33,20 @@ export async function renderCardDetail(container, { id }) {
   function show(card) {
     const canEdit = !!caps.editCards;
     const canRescan = canEdit || (card.status !== 'confirmed' && card.createdBy && card.createdBy.id === state.me.id);
-    root.innerHTML = `<p><a href="/">← 名刺を探す</a></p>
-      <h1>${esc(card.name) || '名刺'} <span class="muted">${esc(card.company)}</span>
+    root.innerHTML = `<a class="back" href="/">${icon('back', 18)}名刺を探す</a>
+      <h1>${esc(card.name) || '名刺'} <span class="muted" style="font-weight:400;font-size:1rem">${esc(card.company)}</span>
         ${card.status !== 'confirmed' ? `<span class="badge badge-${esc(card.status)}">${esc(STATUS_LABEL[card.status] || card.status)}</span>` : ''}</h1>
       <p class="muted">登録: ${esc(card.createdBy && card.createdBy.name)} ${esc(formatDate(card.createdAt))} ／ 最終編集: ${esc(card.updatedBy ? card.updatedBy.name : '-')} ${esc(formatDate(card.updatedAt))}</p>
       ${card.failure ? `<p class="alert alert-error">${esc(card.failure.message)}</p>` : ''}
       <div data-body>${cardViewHtml(card)}</div>
       <div class="actions">
-        ${canEdit ? '<button type="button" class="btn btn-primary" data-edit>編集</button>' : ''}
+        ${canEdit ? `<button type="button" class="btn btn-primary" data-edit>${icon('edit', 18)}編集</button>` : ''}
         ${canRescan ? '<button type="button" class="btn" data-rescan>読み取り直し</button>' : ''}
-        ${canDelete(card) ? '<button type="button" class="btn btn-danger" data-del>削除</button>' : ''}
+        ${canDelete(card) ? `<button type="button" class="btn btn-danger" data-del>${icon('trash', 18)}削除</button>` : ''}
       </div>
       ${canRescan ? `<p class="muted" data-shrunk-note ${card.imageOptimized ? '' : 'hidden'}>縮小した画像で読み取るため、精度が落ちることがあります</p>` : ''}
-      ${state.config.features.minutes ? '<section><h2>この人との議事録</h2><div data-minutes><p class="muted">読み込んでいます…</p></div></section>' : ''}
-      ${caps.viewHistory ? '<section><h2>変更履歴</h2><div data-history><p class="muted">読み込んでいます…</p></div></section>' : ''}`;
+      ${state.config.features.minutes ? `<section><h2>${icon('mic', 18)} この人との議事録</h2><div data-minutes><div class="skel" style="height:44px"></div></div></section>` : ''}
+      ${caps.viewHistory ? `<section><h2>${icon('history', 18)} 変更履歴</h2><div data-history><div class="skel" style="height:44px"></div></div></section>` : ''}`;
     bindZoom(root);
     const body = root.querySelector('[data-body]');
     root.querySelector('[data-edit]')?.addEventListener('click', async (e) => {

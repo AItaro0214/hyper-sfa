@@ -6,8 +6,8 @@ import { navigate } from '../router.js';
 import { passwordLogin } from '../auth.js';
 
 export function renderSetup(container) {
-  container.innerHTML = `<div class="auth-card">
-    <h1>最初の管理者を作る</h1>
+  container.innerHTML = `<div class="auth-wrap"><div class="auth-card">
+    <h1 style="font-size:1.3rem;margin:0 0 8px">最初の管理者を作る</h1>
     <p class="muted">はじめての利用です。管理者の ID とパスワードを決めてください。</p>
     <p class="alert alert-error" role="alert" id="err" hidden></p>
     <form id="f">
@@ -16,7 +16,7 @@ export function renderSetup(container) {
       <label class="field"><span>パスワード（10 文字以上）</span><input name="password" type="password" autocomplete="new-password" minlength="10" required></label>
       <label class="field"><span>パスワード（確認）</span><input name="password2" type="password" autocomplete="new-password" minlength="10" required></label>
       <button class="btn btn-primary btn-block" type="submit">作成する</button>
-    </form></div>`;
+    </form></div></div>`;
   const form = container.querySelector('#f');
   const errBox = container.querySelector('#err');
   form.addEventListener('submit', async (e) => {

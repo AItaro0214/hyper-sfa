@@ -51,30 +51,39 @@ export async function keyStatus(env, provider) {
 // ---- モデル ----
 
 export function rowToModel(r) {
+  // 説明の項目（tier / status / note）が列に無い行は、core の初期一覧から補う（古い行や、手で足したモデル）
+  const d = DEFAULT_MODELS.find((m) => m.id === r.id) ?? {};
   return {
     id: r.id,
     provider: r.provider,
-    label: r.label,
+    label: r.label ?? d.label ?? r.id,
     uses: safeJson(r.uses, []),
     pricing: safeJson(r.pricing, {}),
     thinkingLevel: r.thinking_level ?? null,
     maxAudioMinutes: r.max_audio_minutes ?? null,
     shutdownAt: r.shutdown_at ?? null,
+    tier: r.tier ?? d.tier ?? null,
+    status: r.status ?? d.status ?? 'stable',
+    note: r.note ?? d.note ?? '',
     active: Boolean(r.active),
     builtin: Boolean(r.builtin),
   };
 }
 
-// models 表が空なら初期一覧を入れる（設計書: 一覧はコードに固定せず設定として持つ）
+// core の初期一覧のうち、models 表に無いものを足す（設計書: 一覧はコードに固定せず設定として持つ）。
+// 表が空のときだけでなく毎回確かめるのは、初期一覧に後から足したモデル（大型モデルなど）が運用中の環境にも出るようにするため。
+// 既にある行は触らない（単価や有効 / 無効は開発コンソールで変えられる）。説明の項目は rowToModel が初期一覧から補う
 export async function ensureModels(env) {
-  const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM models').first();
-  if (row.n > 0) return;
+  const { results } = await env.DB.prepare('SELECT id FROM models').all();
+  const have = new Set(results.map((r) => r.id));
+  const missing = DEFAULT_MODELS.filter((m) => !have.has(m.id));
+  if (missing.length === 0) return;
   const stmt = env.DB.prepare(
-    `INSERT OR IGNORE INTO models (id, provider, label, uses, pricing, thinking_level, max_audio_minutes, shutdown_at, active, builtin)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
+    `INSERT OR IGNORE INTO models (id, provider, label, uses, pricing, thinking_level, max_audio_minutes, shutdown_at, tier, status, note, active, builtin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
   );
   await env.DB.batch(
-    DEFAULT_MODELS.map((m) =>
+    missing.map((m) =>
       stmt.bind(
         m.id,
         m.provider,
@@ -84,6 +93,9 @@ export async function ensureModels(env) {
         m.thinkingLevel ?? null,
         m.maxAudioMinutes ?? null,
         m.shutdownAt ?? null,
+        m.tier ?? null,
+        m.status ?? 'stable',
+        m.note ?? '',
       ),
     ),
   );

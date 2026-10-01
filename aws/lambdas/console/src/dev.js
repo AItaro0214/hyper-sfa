@@ -85,18 +85,39 @@ const presentModel = (m) => ({
   thinkingLevel: m.thinkingLevel ?? null,
   maxAudioMinutes: m.maxAudioMinutes ?? null,
   shutdownAt: m.shutdownAt ?? null,
+  tier: m.tier ?? null,
+  status: m.status ?? 'stable',
+  note: m.note ?? '',
   active: m.active !== false,
   builtin: m.builtin === true,
 });
 
-/** 初回は core の初期一覧を DynamoDB に書き込む。設定として持ち、以後は開発コンソールで変えられる（§5.2）。 */
+// 初期一覧（core の DEFAULT_MODELS）で、後から足した説明の項目。既に DynamoDB にある初期モデルにはこれだけを補う。
+// 単価・有効 / 無効・用途は開発コンソールで変えられるので、上書きしない
+const META_KEYS = ['label', 'tier', 'status', 'note'];
+
+/** core の初期一覧を DynamoDB に揃える。無いモデルは足し、ある初期モデルには説明の項目だけ補う。以後は開発コンソールで変えられる（§5.2）。 */
 async function listModels() {
   let items = await ddb.queryAll({ pk: 'ORG', skPrefix: 'MODEL#' });
-  if (items.length === 0) {
-    await Promise.all(DEFAULT_MODELS.map((m) => ddb.put({ ...K.model(m.id), ...m, active: m.active !== false }, { condition: 'attribute_not_exists(pk)' }).catch(() => {})));
+  const idOf = (i) => i.id ?? String(i.sk).slice('MODEL#'.length);
+  const byId = new Map(items.map((i) => [idOf(i), i]));
+  const writes = [];
+  for (const m of DEFAULT_MODELS) {
+    const cur = byId.get(m.id);
+    if (!cur) {
+      // 初期一覧に後から足したモデル（大型モデルなど）が、既に運用中の環境にも出るように
+      writes.push(ddb.put({ ...K.model(m.id), ...m, active: m.active !== false }, { condition: 'attribute_not_exists(pk)' }).catch(() => {}));
+      continue;
+    }
+    const patch = {};
+    for (const k of META_KEYS) if (cur[k] == null && m[k] != null) patch[k] = m[k];
+    if (Object.keys(patch).length) writes.push(ddb.update('ORG', `MODEL#${m.id}`, { set: patch }).catch(() => {}));
+  }
+  if (writes.length) {
+    await Promise.all(writes);
     items = await ddb.queryAll({ pk: 'ORG', skPrefix: 'MODEL#' });
   }
-  return items.map((i) => ({ ...i, id: i.id ?? String(i.sk).slice('MODEL#'.length) })).sort((a, b) => a.id.localeCompare(b.id));
+  return items.map((i) => ({ ...i, id: idOf(i) })).sort((a, b) => a.id.localeCompare(b.id));
 }
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;

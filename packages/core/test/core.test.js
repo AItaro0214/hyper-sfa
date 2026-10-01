@@ -4,7 +4,7 @@ import {
   normalizeText, phoneDigits, searchKeys, parseQuery, matchCard,
   buildCsv, parseCsv, detectAndDecode, historyToCsvRows, HISTORY_CSV_COLUMNS,
   planUserImport, parseUserRows,
-  estimateCost, priceAt, DEFAULT_MODELS,
+  estimateCost, priceAt, DEFAULT_MODELS, DEFAULT_SELECTION, tierOf,
   offsetTimestamps, joinSegments,
   capabilitiesFor, levelFor, canSeeCard, canDeleteCard, DEFAULT_POSITIONS,
   renderPrompt, DEFAULT_PROMPTS,
@@ -219,4 +219,50 @@ test('ulid / isValidEmail / monthKey', () => {
   assert.equal(isValidEmail('taro@example.co.jp'), true);
   assert.equal(isValidEmail('taro@example'), false);
   assert.equal(monthKey(new Date('2026-10-28T00:00:00Z')), '2026-10');
+});
+
+test('モデル一覧: 全モデルに tier / status / label があり、tier は tierOf と一致する', () => {
+  for (const m of DEFAULT_MODELS) {
+    assert.ok(m.label, m.id);
+    assert.ok(['stable', 'preview'].includes(m.status), m.id);
+    assert.ok(['lite', 'standard', 'high', 'top', null].includes(m.tier), m.id);
+    assert.equal(m.tier, tierOf(m), m.id);
+  }
+  assert.equal(DEFAULT_MODELS.find((m) => m.id === 'gpt-6-astra').tier, 'top');
+  assert.equal(DEFAULT_MODELS.find((m) => m.id === 'gemini-3.1-pro-preview').status, 'preview');
+  const ids = DEFAULT_MODELS.map((m) => m.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('tierOf: 出力単価の境界', () => {
+  const t = (output) => tierOf({ pricing: { output } });
+  assert.equal(t(2.5), 'lite');
+  assert.equal(t(2.51), 'standard');
+  assert.equal(t(10), 'standard');
+  assert.equal(t(10.01), 'high');
+  assert.equal(t(30), 'high');
+  assert.equal(t(30.01), 'top');
+  assert.equal(tierOf({ pricing: { perMinute: 0.006 } }), null);
+  assert.equal(tierOf('gpt-6-astra'), 'top');
+});
+
+test('priceAt: longContext は tokens が閾値を超えたときだけ', () => {
+  assert.equal(priceAt('gemini-3.1-pro-preview', '2026-10-01').input, 2);
+  assert.equal(priceAt('gemini-3.1-pro-preview', '2026-10-01', { tokens: 200000 }).input, 2);
+  const over = priceAt('gemini-3.1-pro-preview', '2026-10-01', { tokens: 200001 });
+  assert.equal(over.input, 4);
+  assert.equal(over.output, 18);
+  assert.equal(over.threshold, undefined);
+  assert.equal(priceAt('gpt-6-astra', null, { tokens: 272001 }).output, 75);
+  assert.equal(priceAt('gpt-6-astra', null, { tokens: 272000 }).output, 50);
+  const c = estimateCost({ model: 'gpt-6-astra', inputTokens: 300000, outputTokens: 1000 });
+  assert.ok(Math.abs(c - (300000 * 20 + 1000 * 75) / 1e6) < 1e-9);
+});
+
+test('DEFAULT_SELECTION のモデルは一覧にあり、用途に合う', () => {
+  for (const [use, id] of Object.entries(DEFAULT_SELECTION)) {
+    const m = DEFAULT_MODELS.find((y) => y.id === id);
+    assert.ok(m, id);
+    assert.ok(m.uses.includes(use), id + ' は ' + use + ' に使える');
+  }
 });

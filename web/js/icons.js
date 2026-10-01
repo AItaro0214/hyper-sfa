@@ -37,9 +37,10 @@ export function icon(name, size = 20) {
 }
 export const ICON_NAMES = Object.keys(P);
 
-// ロゴ（名刺の角 + 波形）。ダークでは角を白、波形をピンクにするため、色は CSS（.logo .l-a / .l-b）で決める。
+// ロゴ（名刺の角 + 波形 + ツノ）。上の 2 つの角は「ツノート」のツノ。ダークでは角を白、波形とツノをピンクにするため、色は CSS（.logo .l-a / .l-b / .l-h）で決める。
 export function logoSvg(size = 28) {
   return `<svg class="logo" width="${size}" height="${size}" viewBox="0 0 48 48" fill="none" aria-hidden="true" focusable="false">
-    <path class="l-a" d="M6 14V9a3 3 0 0 1 3-3h5M34 6h5a3 3 0 0 1 3 3v5M42 34v5a3 3 0 0 1-3 3h-5M14 42H9a3 3 0 0 1-3-3v-5" stroke-width="3.2" stroke-linecap="round"/>
+    <path class="l-h" d="M6 16C5 10 7 5.5 13 3.5C10.5 7 10.5 11.5 12 16ZM42 16C43 10 41 5.5 35 3.5C37.5 7 37.5 11.5 36 16Z"/>
+    <path class="l-a" d="M42 34v5a3 3 0 0 1-3 3h-5M14 42H9a3 3 0 0 1-3-3v-5" stroke-width="3.2" stroke-linecap="round"/>
     <path class="l-b" d="M11 25h5l3-8 5 15 4-12 3 5h6" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }

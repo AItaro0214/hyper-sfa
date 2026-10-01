@@ -124,7 +124,7 @@ code { font-family: var(--mono); font-size: .88em; background: var(--glass-2); p
   background: color-mix(in srgb, var(--bg0) 72%, transparent); -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur)); border-bottom: 1px solid var(--line); }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; color: var(--text); text-decoration: none; letter-spacing: .01em; min-width: 0; }
 .brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.logo .l-a { stroke: var(--logo-a); } .logo .l-b { stroke: var(--accent); }
+.logo .l-a { stroke: var(--logo-a); } .logo .l-b { stroke: var(--accent); } .logo .l-h { fill: var(--accent); }
 .nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: flex; justify-content: space-around; padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
   background: color-mix(in srgb, var(--bg0) 80%, transparent); -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur)); border-top: 1px solid var(--line); }
 .nav a { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 52px; color: var(--muted); text-decoration: none; font-size: .68rem; font-weight: 500; border-radius: var(--radius-s); transition: color .15s var(--ease); -webkit-tap-highlight-color: transparent; }

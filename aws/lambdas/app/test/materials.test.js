@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { Hono } from 'hono';
 import { ddb, errorHandler } from '@hyper-sfa/aws-shared';
 import { registerMinutesRoutes } from '../src/minutes.js';
+import { MATERIAL_LIMITS } from '@hyper-sfa/core';
 
 const mat = (n) => ({ pk: 'MIN#m1', sk: `MAT#00${n}`, id: `m00${n}`, seq: n, state: 'ready', uploadedAt: new Date().toISOString() });
 
@@ -26,14 +27,14 @@ test('資料が 0 件のとき、資料つきの作り直しは validation', asy
   assert.equal((await res.json()).error.code, 'validation');
 });
 
-test('6 件目、20MB 超、対応外の形式は validation', async () => {
+test('6 件目、上限超、対応外の形式は validation', async () => {
   const { post } = setup([1, 2, 3, 4, 5].map(mat));
   let res = await post('/api/minutes/m1/materials', { name: 'a.pdf', kind: 'pdf', size: 1000 });
   assert.equal(res.status, 400);
   assert.equal((await res.json()).error.code, 'validation');
 
   const s2 = setup([]);
-  res = await s2.post('/api/minutes/m1/materials', { name: 'a.pdf', kind: 'pdf', size: 21 * 1024 * 1024 });
+  res = await s2.post('/api/minutes/m1/materials', { name: 'a.pdf', kind: 'pdf', size: MATERIAL_LIMITS.maxBytes + 1 });
   assert.equal(res.status, 400);
   res = await s2.post('/api/minutes/m1/materials', { name: 'a.ppt', kind: 'pptx', size: 1000 });
   assert.equal(res.status, 400);

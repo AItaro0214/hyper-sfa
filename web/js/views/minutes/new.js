@@ -12,7 +12,7 @@ import {
 } from '../../recorder/capture.js';
 import { Segmenter } from '../../recorder/segmenter.js';
 import { uploadFullAudio, sleep } from '../../recorder/upload.js';
-import { esc, clock, ask, debounce, errMessage } from './util.js';
+import { esc, clock, ask, debounce, errMessage, showModal } from './util.js';
 import { mountPeopleEditor, peopleToPayload } from './pickers.js';
 import { paintUpload, newUploadSession } from './upload.js';
 
@@ -100,12 +100,38 @@ function paintGuide(view, kind) {
     startBtn.disabled = true;
     err.textContent = '';
     try {
+      // 共有の選択画面でシステム音声のチェックを忘れると音の無い録音になるので、その手前で必ず念を押す
+      if (isWeb && !(await confirmSystemAudio())) { startBtn.disabled = false; return; }
       await startSession(kind);
       if (alive(view)) paintPhase(view);
     } catch (e) {
       err.textContent = e.userMessage || explainMediaError(e, e.mediaKind || (isWeb ? 'display' : 'mic'));
       startBtn.disabled = false;
     }
+  });
+}
+
+// 「システム音声も共有する」に必ずチェックを入れてもらうための大きな注意。OK で true
+function confirmSystemAudio() {
+  return new Promise((resolve) => {
+    let ok = false;
+    const m = showModal({
+      title: '録音を始める前に',
+      onClose: () => resolve(ok),
+      html: `
+        <div class="mn-sysaudio">
+          <div class="mn-sysaudio-big">次の画面で<br><mark>「システム音声も共有する」</mark><br>に必ずチェックを入れてください</div>
+          <div class="mn-sysaudio-mock" aria-hidden="true">
+            <div class="msm-tabs"><span>Chrome タブ</span><span>ウィンドウ</span><span class="on">画面全体</span></div>
+            <div class="msm-screen"></div>
+            <label class="msm-check"><span class="box">✓</span>システム音声も共有する</label>
+            <div class="msm-btn">共有</div>
+          </div>
+          <p class="mn-muted">チェックが無いと、相手の声が入らない録音になります。「画面全体」が選ばれた状態で開きます。</p>
+          <button type="button" class="mn-btn mn-btn-primary mn-btn-lg" data-ok>わかった。共有を選ぶ</button>
+        </div>`,
+    });
+    m.el.querySelector('[data-ok]').addEventListener('click', () => { ok = true; m.close(true); });
   });
 }
 

@@ -101,10 +101,17 @@ export async function startWebMeeting({ onShareEnded, onMicEnded } = {}) {
   const reason = webMeetingUnavailableReason();
   if (reason) throw Object.assign(new Error(reason), { name: 'NotSupportedError' });
 
+  // 共有の選択画面で「画面全体」が最初に選ばれているようにする（displaySurface: 'monitor'）。
+  // タブや窓を選ぶと会議アプリの音が入らないことがあり、画面全体 + システム音声が一番確実なため。
+  // 自分のブラウザのタブは選択肢から外し、共有中の切り替えは許す。対応していないブラウザは無視する
   const display = await navigator.mediaDevices.getDisplayMedia({
-    video: true,
+    video: { displaySurface: 'monitor' },
     audio: true,
     systemAudio: 'include',
+    monitorTypeSurfaces: 'include',
+    selfBrowserSurface: 'exclude',
+    surfaceSwitching: 'include',
+    preferCurrentTab: false,
   });
   const sysTracks = display.getAudioTracks();
   if (!sysTracks.length) {

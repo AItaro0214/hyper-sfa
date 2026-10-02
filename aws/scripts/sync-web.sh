@@ -6,7 +6,6 @@
 # 前提: aws CLI が入っていて、対象のアカウントに認証済みであること。
 #       Terraform の出力から、バケット名と CloudFront の ID を読む（terraform init 済みで apply 済みのとき）。
 #       出力を使わない場合は WEB_BUCKET と DISTRIBUTION_ID を環境変数で渡す。
-# 今はデプロイしない段階なので、このスクリプトは実行しない（docs、CLAUDE.md の「デプロイ」）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -23,6 +22,9 @@ echo "web/ -> s3://$WEB_BUCKET/"
 # --delete で、消したファイルが残らないようにする。core は別の同期で置くので除外する
 aws s3 sync "$ROOT/web/" "s3://$WEB_BUCKET/" --delete --exclude "core/*" \
   --cache-control "no-cache"
+
+# マニフェストは拡張子から MIME が引けないので、種類を明示して置き直す（Android のホーム画面追加に要る）
+aws s3 cp "$ROOT/web/site.webmanifest" "s3://$WEB_BUCKET/site.webmanifest"   --cache-control "no-cache" --content-type "application/manifest+json"
 
 echo "packages/core/src -> s3://$WEB_BUCKET/core/"
 aws s3 sync "$ROOT/packages/core/src/" "s3://$WEB_BUCKET/core/" --delete \

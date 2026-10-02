@@ -231,7 +231,7 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 | メソッドとパス | 内容 |
 | --- | --- |
 | `GET /api/minutes/{id}/materials` | `{ "items": [...] }` |
-| `POST /api/minutes/{id}/materials` | `{ "name", "kind", "size", "hasExtract": true }` → `{ "id", "seq", "file": { "url", "method": "PUT", "headers" }, "extract": { "url", "method": "PUT", "headers" } または null }`。作った人だけ。6 件目や 20MB 超は `validation`。`kind` は拡張子から画面が決める |
+| `POST /api/minutes/{id}/materials` | `{ "name", "kind", "size", "hasExtract": true }` → `{ "id", "seq", "file": { "url", "method": "PUT", "headers" }, "extract": { "url", "method": "PUT", "headers" } または null }`。作った人だけ。6 件目や 50MB 超は `validation`。`kind` は拡張子から画面が決める |
 | `PUT /api/minutes/{id}/materials/{matId}/done` | `{ "pages"?, "extracted": true または false }`。送り終えた印。PDF は `outlineStatus: pending`、pptx / xlsx は `none`（目次は機械的に作るため） |
 | `DELETE /api/minutes/{id}/materials/{matId}` | 作った人だけ。ファイルと抜いた JSON と目次を消す |
 | `GET /api/minutes/{id}/materials/{matId}/url` | `{ "url", "expiresAt", "filename" }`。見られる人。元のファイルを開く / ダウンロードする |

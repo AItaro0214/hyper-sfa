@@ -341,6 +341,7 @@ img.zoomed { max-width: 100%; display: block; margin: 0 auto; border-radius: var
 .row-sub { color: var(--muted); font-size: .85rem; word-break: break-all; line-height: 1.5; }
 .nw { white-space: nowrap; }
 .row-sub.mono { font-family: var(--mono); font-size: .8rem; }
+.row-act { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 .row-act .btn { min-height: var(--tap); }
 @media (max-width: 640px) {
   .search-basic { grid-template-columns: 1fr 1fr; gap: 0 10px; }

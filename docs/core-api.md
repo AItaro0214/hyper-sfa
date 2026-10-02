@@ -54,10 +54,11 @@ estimateCost({ model, inputTokens, outputTokens, audioSeconds, date }) // USD
 ## 5. Gemini `gemini.js`
 
 ```js
-buildGenerateRequest({ model, apiKey, prompt, parts, schema, thinkingLevel, maxOutputTokens, mediaResolution })
+buildGenerateRequest({ model, apiKey, prompt, parts, schema, thinkingLevel, maxOutputTokens, mediaResolution, safetySettings })
 // → { url, method: 'POST', headers, body: string }
 // parts: [{ inlineData: { mimeType, data(base64) } } | { fileData: { mimeType, fileUri } }]
 parseGenerateResponse(json) // → { text, finishReason, blocked: boolean, usage: { inputTokens, outputTokens, thoughtTokens } }
+SAFETY_BLOCK_NONE // 安全フィルタを BLOCK_NONE にする safetySettings の配列。buildGenerateRequest / buildChatGenerateRequest の safetySettings に渡す
 buildFilesUploadRequest({ apiKey, mimeType, displayName, sizeBytes }) // Files API の再開可能アップロードの開始リクエスト
 buildListModelsRequest({ apiKey })
 parseListModels(json) // → ['gemini-3.8-flash', ...]（generateContent 対応のものだけ）

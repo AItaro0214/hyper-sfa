@@ -132,7 +132,7 @@ export function renderDetail(container, params) {
       const text = f.kind === 'not_configured' ? '設定に問題があります。開発者に連絡してください。' : (f.message || 'うまくいきませんでした。');
       box.innerHTML = `<div class="mn-alert mn-alert-error"><strong>${f.step === 'outline' ? '資料の目次作成' : f.step === 'summarize' ? '議事録の作成' : '文字起こし'}に失敗しました。</strong><div>${esc(text)}</div>
         <div class="mn-muted">録音は保存されています。</div>
-        ${isOwner() && f.retryable !== false && f.kind !== 'not_configured' ? '<button class="mn-btn mn-btn-primary" data-retry>もう一度試す</button>' : ''}</div>`;
+        ${isOwner() && f.kind !== 'not_configured' && f.kind !== 'audio_expired' ? '<button class="mn-btn mn-btn-primary" data-retry>もう一度試す</button>' : ''}</div>`;
     } else if (m.status === 'uploaded') {
       box.innerHTML = `<div class="mn-alert">録音は保存済みです。まだ議事録は作っていません。${isOwner() ? '<button class="mn-btn mn-btn-primary" data-retry>議事録を作る</button>' : ''}</div>`;
     } else if (m.status === 'recording') {

@@ -81,7 +81,7 @@ export function materialsRoutes(app) {
     const size = int(b.size, 0);
     if (size <= 0) throw validationError('size が必要です', [{ field: 'size', message: '1 バイト以上' }]);
     if (size > MATERIAL_LIMITS.maxBytes) {
-      throw validationError(`資料が大きすぎます（${MATERIAL_LIMITS.maxBytes / 1024 / 1024}MB まで）`, [{ field: 'size', message: '20MB まで' }]);
+      throw validationError(`資料が大きすぎます（${MATERIAL_LIMITS.maxBytes / 1024 / 1024}MB まで）`, [{ field: 'size', message: `${MATERIAL_LIMITS.maxBytes / 1024 / 1024}MB まで` }]);
     }
     // done が来なかった古いアップロードを片付けてから数える
     const stale =

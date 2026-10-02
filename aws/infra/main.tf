@@ -366,9 +366,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "exports" {
   }
 }
 
-# ブラウザから署名付き URL で直接 PUT / GET する。オリジンは画面と同じ CloudFront のドメイン
+# ブラウザから署名付き URL で直接 PUT / GET する。オリジンは画面と同じ CloudFront のドメイン。
+# data は資料（PDF / pptx / xlsx）と、ブラウザで抜いた中身の JSON を直接 PUT するため（minutes-design §15）
 resource "aws_s3_bucket_cors_configuration" "browser_io" {
-  for_each = toset(["images", "audio"])
+  for_each = toset(["images", "audio", "data"])
   bucket   = aws_s3_bucket.b[each.key].id
 
   cors_rule {

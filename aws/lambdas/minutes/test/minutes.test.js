@@ -280,3 +280,126 @@ test('durationSec が 0 でも、大きさから 64kbps 相当で概算して分
   assert.equal(calls[0][calls[0].indexOf('-segment_time') + 1], '600');
   assert.equal(t.mimes.length, 2);
 });
+
+// ---- 拒否（blocked）された区切り ----
+
+// 元の区切り（中身が空の音声）は常に blocked。部品は blockedParts の番号だけ blocked
+async function runBlocked({ blockedParts = [], bodies = [] }) {
+  const calls = [];
+  const ddb = fakeDdb([
+    { pk: 'MIN#m1', sk: 'META', status: 'queued', ownerEmail: 'a@x.jp', title: '定例', heldAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' },
+    { pk: 'MIN#m1', sk: 'SEG#1', seq: 1, key: 'minutes/m1/seg-1.m4a', mime: 'audio/mp4', startSec: 0, durationSec: 600, transcriptStatus: 'pending' },
+  ]);
+  let names = [];
+  const t = makeDeps({ ddb, fetchImpl: async (u, init) => {
+    bodies.push(JSON.parse(init.body));
+    const inline = bodies.at(-1).contents.flatMap((c) => c.parts ?? []).find((p) => p.inlineData)?.inlineData;
+    if (!inline) return reply('## 要点\n議事録');
+    const audio = Buffer.from(inline.data, 'base64').toString();
+    const m = /^part-(\d+)$/.exec(audio);
+    if (!m || blockedParts.includes(Number(m[1]))) {
+      t.blockedCalls = (t.blockedCalls ?? 0) + 1;
+      return reply('', 'SAFETY');
+    }
+    return reply('[00:05] 話者A: こんにちは');
+  } });
+  t.puts.set('minutes/m1/seg-1.m4a', Buffer.from('whole'));
+  let readIdx = 0;
+  t.deps.io = {
+    exists: async () => true, mkdtemp: async () => '/tmp/x', writeFile: async () => {},
+    readFile: async (f) => Buffer.from(f.slice(Math.max(f.lastIndexOf('/'), f.lastIndexOf(String.fromCharCode(92))) + 1).replace(/\.\w+$/, '')),
+    readdir: async () => names, rm: async () => {},
+    exec: async (cmd, args) => { calls.push(args); names = ['part-000.m4a', 'part-001.m4a', 'part-002.m4a', 'part-003.m4a']; readIdx++; },
+  };
+  const sleeps = [];
+  t.deps.sleep = async (ms) => { sleeps.push(ms); };
+  await runMinutes({ minuteId: 'm1', target: 'generate' }, t.deps);
+  return { t, calls, sleeps, ddb };
+}
+
+test('blocked は数回やり直し、それでも駄目なら 4 等分して起こし、全部通れば結合する', async () => {
+  const { t, calls, sleeps } = await runBlocked({});
+  assert.equal(t.blockedCalls, 3); // 最初 + やり直し 2 回
+  assert.deepEqual(sleeps, [2000, 5000]);
+  const st = calls[0][calls[0].indexOf('-segment_time') + 1];
+  assert.equal(st, '150'); // 600 秒 ÷ 4
+  const text = t.puts.get('minutes/m1/transcript-v1.txt').toString();
+  assert.match(text, /\[00:00:05\]/);
+  assert.match(text, /\[00:02:35\]/);
+  assert.match(text, /\[00:05:05\]/);
+  assert.match(text, /\[00:07:35\]/);
+  assert.doesNotMatch(text, /文字起こしできませんでした/);
+});
+
+test('1 部品だけ blocked のままなら、その分は置き換えの行になり、区切りは成功する', async () => {
+  const { t, ddb } = await runBlocked({ blockedParts: [2] });
+  const text = t.puts.get('minutes/m1/transcript-v1.txt').toString();
+  assert.ok(text.includes('[00:05:00〜00:07:30 この区間は文字起こしできませんでした]'));
+  assert.match(text, /\[00:07:35\]/);
+  const seg = ddb.items?.get?.('MIN#m1|SEG#1');
+  if (seg) assert.equal(seg.transcriptStatus, 'done');
+  assert.ok(t.puts.has('minutes/m1/transcript-v1.txt'));
+});
+
+test('Gemini の body に safetySettings（BLOCK_NONE）が入る', async () => {
+  const bodies = [];
+  await runBlocked({ bodies });
+  const withAudio = bodies.filter((b) => b.contents.some((c) => c.parts.some((p) => p.inlineData)));
+  assert.ok(withAudio.length > 0);
+  for (const b of withAudio) {
+    assert.equal(b.safetySettings.length, 4);
+    assert.ok(b.safetySettings.every((s) => s.threshold === 'BLOCK_NONE'));
+  }
+});
+
+// 14MB 以上の PDF は Files API に預けてから fileData で読ませ、読み終えたら削除する
+function bigPdfDeps(ddb, states) {
+  const log = [];
+  const t = makeDeps({
+    ddb,
+    fetchImpl: async (url, init) => {
+      if (url.includes('/upload/v1beta/files')) {
+        log.push('start');
+        return { status: 200, headers: new Headers({ 'x-goog-upload-url': 'https://up.example/u1' }), json: async () => ({}) };
+      }
+      if (url === 'https://up.example/u1') {
+        log.push('body');
+        return { status: 200, json: async () => ({ file: { name: 'files/abc', uri: 'https://g/files/abc', state: states[0] } }) };
+      }
+      if (init.method === 'GET' && url.endsWith('/files/abc')) {
+        log.push('get');
+        return { status: 200, json: async () => ({ file: { name: 'files/abc', uri: 'https://g/files/abc', state: states[1] } }) };
+      }
+      if (init.method === 'DELETE') { log.push('delete'); return { status: 200, json: async () => ({}) }; }
+      const parts = (JSON.parse(init.body).contents ?? []).flatMap((c) => c.parts ?? []);
+      const fd = parts.find((p) => p.fileData);
+      if (fd) {
+        log.push(`generate:${fd.fileData.fileUri}:${Boolean(parts.find((p) => p.inlineData))}`);
+        return reply(OUTLINE_JSON);
+      }
+      log.push('summary');
+      return reply(SUMMARY_JSON);
+    },
+  });
+  t.puts.set('minutes/m1/transcript-v1.txt', Buffer.from('[00:00:10] 話者A: 提案です'));
+  t.puts.set('minutes/m1/materials/m001.pdf', Buffer.alloc(14 * 1024 * 1024 + 1));
+  t.puts.set('minutes/m1/materials/m002.extract.json', Buffer.from(JSON.stringify(XLSX_EXTRACT)));
+  return { t, log };
+}
+
+test('資料つき: 14MB 以上の PDF は Files API に預けて fileData で読み、終わったら削除する', async () => {
+  const ddb = fakeDdb(materialSeed());
+  const { t, log } = bigPdfDeps(ddb, ['ACTIVE']);
+  const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
+  assert.equal(r.ok, true);
+  assert.deepEqual(log.slice(0, 4), ['start', 'body', 'generate:https://g/files/abc:false', 'delete']);
+  assert.equal(ddb.m.get('MIN#m1|MAT#001').outlineStatus, 'done');
+});
+
+test('資料つき: Files API が PROCESSING のあいだは ACTIVE になるまで待ってから読む', async () => {
+  const ddb = fakeDdb(materialSeed());
+  const { t, log } = bigPdfDeps(ddb, ['PROCESSING', 'ACTIVE']);
+  const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
+  assert.equal(r.ok, true);
+  assert.deepEqual(log.slice(0, 5), ['start', 'body', 'get', 'generate:https://g/files/abc:false', 'delete']);
+});

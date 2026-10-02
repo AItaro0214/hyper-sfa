@@ -3,7 +3,8 @@
 
 export const MATERIAL_LIMITS = Object.freeze({
   maxFiles: 5,
-  maxBytes: 20 * 1024 * 1024,
+  // 50MB。PDF は 14MB を超えると Gemini の Files API に預けてから読ませる（インラインの上限のため）
+  maxBytes: 50 * 1024 * 1024,
   maxExtractBytes: 2 * 1024 * 1024,
   kinds: Object.freeze(['pdf', 'pptx', 'xlsx']),
 });

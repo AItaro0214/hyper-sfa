@@ -39,7 +39,7 @@ export function toGeminiSchema(schema) {
  * @param {object} [o.schema] 構造化出力のスキーマ。無ければ JSON 指定を入れない（文字起こしや議事録は文章で返す）
  * @param {string} [o.thinkingLevel] 'minimal' | 'low' など。大文字にして渡す
  */
-export function buildGenerateRequest({ model, apiKey, prompt, parts = [], schema, thinkingLevel, maxOutputTokens, mediaResolution }) {
+export function buildGenerateRequest({ model, apiKey, prompt, parts = [], schema, thinkingLevel, maxOutputTokens, mediaResolution, safetySettings }) {
   const generationConfig = {};
   if (schema) {
     generationConfig.responseMimeType = 'application/json';
@@ -53,6 +53,7 @@ export function buildGenerateRequest({ model, apiKey, prompt, parts = [], schema
     contents: [{ role: 'user', parts: [...parts, { text: prompt }] }],
     generationConfig,
   };
+  if (safetySettings) body.safetySettings = safetySettings;
   return {
     url: `${BASE}/v1beta/models/${modelPath(model)}:generateContent`,
     method: 'POST',
@@ -66,7 +67,7 @@ export function buildGenerateRequest({ model, apiKey, prompt, parts = [], schema
  * Gemini の role は user / model なので、assistant を model に写す。
  * @param {Array<{role: 'user' | 'assistant', text: string}>} o.turns
  */
-export function buildChatGenerateRequest({ model, apiKey, systemText, turns = [], thinkingLevel, maxOutputTokens }) {
+export function buildChatGenerateRequest({ model, apiKey, systemText, turns = [], thinkingLevel, maxOutputTokens, safetySettings }) {
   const generationConfig = {};
   if (thinkingLevel) generationConfig.thinkingConfig = { thinkingLevel: String(thinkingLevel).toUpperCase() };
   if (maxOutputTokens) generationConfig.maxOutputTokens = maxOutputTokens;
@@ -75,6 +76,7 @@ export function buildChatGenerateRequest({ model, apiKey, systemText, turns = []
     contents: turns.map((t) => ({ role: t.role === 'assistant' || t.role === 'model' ? 'model' : 'user', parts: [{ text: String(t.text ?? '') }] })),
     generationConfig,
   };
+  if (safetySettings) body.safetySettings = safetySettings;
   return {
     url: `${BASE}/v1beta/models/${modelPath(model)}:generateContent`,
     method: 'POST',
@@ -82,6 +84,11 @@ export function buildChatGenerateRequest({ model, apiKey, systemText, turns = []
     body: JSON.stringify(body),
   };
 }
+
+// 安全フィルタを止める設定（商談の音声が誤って止まるのを減らす）。safetySettings に渡す
+export const SAFETY_BLOCK_NONE = [
+  'HARM_CATEGORY_HARASSMENT', 'HARM_CATEGORY_HATE_SPEECH', 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'HARM_CATEGORY_DANGEROUS_CONTENT',
+].map((category) => ({ category, threshold: 'BLOCK_NONE' }));
 
 // 応答が拒否されたことを示す finishReason
 const BLOCKED_FINISH = new Set(['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'IMAGE_SAFETY', 'RECITATION']);

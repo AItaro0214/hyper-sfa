@@ -109,7 +109,10 @@ export async function renderHome(container, _p, query, minutesMod) {
         <div class="row-sub mono">${[...(c.phones || []), ...(c.mobiles || [])].map((t) => `<span class="nw">${esc(t)}</span>`).join(' / ')}</div>
         <div class="row-sub">${(c.emails || []).map(esc).join(' / ')}</div>
       </div>
-      <div class="row-act">${canEdit ? `<button type="button" class="btn btn-small" data-edit aria-label="編集">${icon('edit', 18)}<span class="lbl">編集</span></button>` : `<button type="button" class="btn btn-small" data-view aria-label="表示">${icon('chevron', 18)}<span class="lbl">表示</span></button>`}</div>
+      <div class="row-act">
+        <button type="button" class="btn btn-small" data-view aria-label="閲覧">${icon('chevron', 18)}<span class="lbl">閲覧</span></button>
+        ${canEdit ? `<button type="button" class="btn btn-small" data-edit aria-label="編集">${icon('edit', 18)}<span class="lbl">編集</span></button>` : ''}
+      </div>
     </article>`;
   }
   function renderList() {

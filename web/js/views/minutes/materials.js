@@ -4,10 +4,11 @@ import { api } from '../../api.js';
 import { toast } from '../../ui.js';
 import { icon } from '../../icons.js';
 import { extractMaterial, materialKind } from '../../materials/extract.js';
+import { MATERIAL_LIMITS } from '/core/materials.js';
 import { esc, ask, errMessage, isProcessing } from './util.js';
 
 const MAX_FILES = 5;
-const MAX_BYTES = 20 * 1024 * 1024;
+const MAX_BYTES = MATERIAL_LIMITS.maxBytes;
 const ICON = { pdf: icon('doc', 18), pptx: icon('screen', 18), xlsx: icon('doc', 18) };
 const OUTLINE = { pending: '目次: 作成待ち', done: '目次: 作成済み', failed: '目次: 失敗' };
 
@@ -63,7 +64,7 @@ export function renderMaterials(container, minute, { onChanged } = {}) {
     ${items.length || run.size ? `<ul class="mn-mat-list">${rows}${sending}</ul>` : '<p class="mn-muted">資料はまだありません。</p>'}
     ${own ? `<div class="mn-mat-foot">
       <button type="button" class="mn-btn" data-mat-regen ${items.length && !busy ? '' : 'disabled'}>資料を踏まえて議事録を作り直す</button>
-      <p class="mn-muted">PDF / pptx / xlsx を 1 件 20MB、${MAX_FILES} 件まで。<br>※ PowerPoint の図が重要なときは、PDF で書き出したものも添付してください。<br>※ 古い形式（.ppt / .xls）は読めません。.pptx / .xlsx に保存し直すか、PDF にしてください。</p></div>` : ''}
+      <p class="mn-muted">PDF / pptx / xlsx を 1 件 ${MAX_BYTES / 1024 / 1024}MB、${MAX_FILES} 件まで。<br>※ PowerPoint の図が重要なときは、PDF で書き出したものも添付してください。<br>※ 古い形式（.ppt / .xls）は読めません。.pptx / .xlsx に保存し直すか、PDF にしてください。</p></div>` : ''}
   </section>`;
 
   const rerender = () => { if (container.isConnected) renderMaterials(container, minute, { onChanged }); };
@@ -74,7 +75,7 @@ export function renderMaterials(container, minute, { onChanged } = {}) {
   async function add(file) {
     let kind;
     try { kind = materialKind(file.name); } catch (e) { toast(e.message, 'error'); return; }
-    if (file.size > MAX_BYTES) { toast('20MB までの資料を添付できます。', 'error'); return; }
+    if (file.size > MAX_BYTES) { toast(`${MAX_BYTES / 1024 / 1024}MB までの資料を添付できます。`, 'error'); return; }
     if (items.length + run.size >= MAX_FILES) { toast(`資料は ${MAX_FILES} 件までです。`, 'error'); return; }
     const key = `${Date.now()}-${Math.random()}`;
     const set = (text) => { run.set(key, { name: file.name, text }); const f = repaints.get(id); if (f) f(); };

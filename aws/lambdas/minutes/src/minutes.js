@@ -2,13 +2,15 @@
 // DynamoDB / S3 / fetch / ffmpeg は deps で受け取る（テストで差し替えるため）。
 import {
   renderPrompt, DEFAULT_PROMPTS, DEFAULT_MODELS, DEFAULT_SELECTION,
-  buildGenerateRequest, parseGenerateResponse, classifyGeminiError,
+  buildGenerateRequest, parseGenerateResponse, SAFETY_BLOCK_NONE, classifyGeminiError,
   buildTranscriptionRequest, parseTranscriptionResponse,
   buildChatRequest, parseChatResponse, classifyOpenAIError,
   offsetTimestamps, joinSegments, usageEvent,
   extractJson, OUTLINE_SCHEMA, MATERIAL_SUMMARY_SCHEMA, outlineFromExtract, formatMaterialsForPrompt, normalizeMapping,
   toGeminiSchema, buildOpenAIFileUploadRequest, parseOpenAIFileResponse, buildOpenAIFileDeleteRequest,
   buildResponsesRequest, parseResponsesResponse,
+  buildFilesUploadRequest, parseFilesUploadStart, buildFilesUploadBodyHeaders, parseFileResponse,
+  buildFileGetRequest, buildFileDeleteRequest,
 } from '@hyper-sfa/core';
 import { runPool } from './pool.js';
 import { ffmpegPath, splitAudio, planSplit, concatToM4a } from './ffmpeg.js';
@@ -20,8 +22,11 @@ const SUMMARIZE_MAX_TOKENS = 8000;
 const OUTLINE_MAX_TOKENS = 16000;
 const MATERIAL_SUMMARY_MAX_TOKENS = 16000;
 const OUTLINE_CONCURRENCY = 3;
-// Gemini の inlineData はリクエスト全体で 20MB。base64 で 4/3 倍になるので、元のファイルは 14MB までにする
+// Gemini の inlineData はリクエスト全体で 20MB が上限で、base64 で 4/3 倍になる。だから 14MB 以上は
+// Files API（無料・預けたファイルは 48 時間で消える）に預けて fileData で読ませる
 const GEMINI_INLINE_MAX_BYTES = 14 * 1024 * 1024;
+const FILE_POLL_INTERVAL_MS = 1500;
+const FILE_POLL_MAX_MS = 60_000;
 const TRANSIENT_DELAYS_MS = [2000, 5000];
 const STALE_MS = 20 * 60 * 1000;
 const TEST_TTL_SEC = 24 * 3600;
@@ -44,7 +49,7 @@ class MinutesError extends Error {
     this.kind = kind;
     this.transient = transient;
     // 何度やっても同じ結果になるものには「もう一度試す」を出さない
-    this.retryable = !['not_configured', 'blocked', 'audio_expired', 'no_audio', 'no_materials'].includes(kind);
+    this.retryable = !['not_configured', 'audio_expired', 'no_audio', 'no_materials'].includes(kind);
   }
 }
 
@@ -227,9 +232,8 @@ async function transcribeSegment(ctx, { seg, cfg, apiKey, vars, acc }) {
   const maxSec = cfg.model.maxAudioMinutes ? cfg.model.maxAudioMinutes * 60 : 0;
   const plan = planSplit({ size: buf.length, durationSec: seg.durationSec ?? 0, maxSec });
 
-  if (!plan) {
-    return transcribeOne(deps, { cfg, apiKey, buf, mime, vars, acc });
-  }
+  const one = (b, mm, durSec) => transcribeGuarded(ctx, { seg, cfg, apiKey, vars, acc, buf: b, mime: mm, durSec });
+  if (!plan) return one(buf, mime, seg.durationSec ?? 0);
 
   // モデルの上限（長さ）か 20MB を超えるので、ffmpeg で短く分ける
   const ffmpeg = ffmpegPath(deps.env);
@@ -249,10 +253,57 @@ async function transcribeSegment(ctx, { seg, cfg, apiKey, vars, acc }) {
   const out = [];
   for (let i = 0; i < files.length; i++) {
     const partBuf = await deps.io.readFile(files[i]);
-    const text = await transcribeOne(deps, { cfg, apiKey, buf: partBuf, mime: partMime, vars, acc });
+    const text = await one(partBuf, partMime, splitSec);
     out.push(offsetTimestamps(text, i * splitSec));
   }
   return out.join('\n');
+}
+
+// やり直しても blocked のままなら、4 等分して起こす。まだ止まる部品は「できませんでした」の 1 行にして続ける
+async function transcribeGuarded(ctx, { seg, cfg, apiKey, vars, acc, buf, mime, durSec }) {
+  const { deps } = ctx;
+  try {
+    return await transcribeOne(deps, { cfg, apiKey, buf, mime, vars, acc });
+  } catch (e) {
+    if (!(e instanceof MinutesError) || e.kind !== 'blocked') throw e;
+  }
+  const ffmpeg = ffmpegPath(deps.env);
+  if (!(await deps.io.exists(ffmpeg))) throw new MinutesError('blocked');
+  const dir = await deps.io.mkdtemp();
+  ctx.tmpDirs.push(dir);
+  const inFile = `${dir}/in.${extOf(seg.key, mime)}`;
+  await deps.io.writeFile(inFile, buf);
+  const total = Math.max(durSec || 0, 4);
+  const subSec = Math.ceil(total / 4);
+  let files;
+  let partMime;
+  try {
+    ({ files, mime: partMime } = await splitAudio(deps.io, ffmpeg, dir, inFile, subSec, mime));
+  } catch {
+    throw new MinutesError('blocked');
+  }
+  const out = [];
+  let blockedParts = 0;
+  for (let i = 0; i < files.length; i++) {
+    const partBuf = await deps.io.readFile(files[i]);
+    try {
+      const text = await transcribeOne(deps, { cfg, apiKey, buf: partBuf, mime: partMime, vars, acc });
+      out.push(offsetTimestamps(text, i * subSec));
+    } catch (e) {
+      if (!(e instanceof MinutesError) || e.kind !== 'blocked') throw e;
+      blockedParts++;
+      const from = i * subSec;
+      const to = Math.min((i + 1) * subSec, total);
+      out.push(`[${hms(from)}〜${hms(to)} この区間は文字起こしできませんでした]`);
+    }
+  }
+  console.log(`minutes: segment ${seg.seq} partially blocked parts=${blockedParts}/${files.length}`);
+  return out.join('\n');
+}
+
+function hms(sec) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(Math.floor(sec / 3600))}:${p(Math.floor((sec % 3600) / 60))}:${p(sec % 60)}`;
 }
 
 async function transcribeOne(deps, { cfg, apiKey, buf, mime, vars, acc }) {
@@ -272,13 +323,17 @@ async function transcribeOne(deps, { cfg, apiKey, buf, mime, vars, acc }) {
     const req = buildGenerateRequest({
       model: model.id, apiKey, prompt: renderPrompt(cfg.prompt, vars),
       parts: [{ inlineData: { mimeType: mime, data: Buffer.from(buf).toString('base64') } }],
-      thinkingLevel: model.thinkingLevel, maxOutputTokens: TRANSCRIBE_MAX_TOKENS,
+      thinkingLevel: model.thinkingLevel, maxOutputTokens: TRANSCRIBE_MAX_TOKENS, safetySettings: SAFETY_BLOCK_NONE,
     });
     const json = await post(deps, req, 'gemini');
     const p = parseGenerateResponse(json);
     acc.inputTokens += p.usage?.inputTokens ?? 0;
     acc.outputTokens += (p.usage?.outputTokens ?? 0) + (p.usage?.thoughtTokens ?? 0);
-    if (p.blocked) throw new MinutesError('blocked');
+    if (p.blocked) {
+      // 中身は出さない。止めた理由だけ残す
+      console.log(`minutes: transcribe blocked finishReason=${p.finishReason ?? ''} blockReason=${json?.promptFeedback?.blockReason ?? ''}`);
+      throw new MinutesError('blocked', { transient: true });
+    }
     // 途中で切れた区切りは失敗にして、withRetry が 1 回だけやり直す
     if (p.finishReason === 'MAX_TOKENS') throw new MinutesError('truncated');
     return p.text ?? '';
@@ -440,24 +495,80 @@ async function outlinePdf(deps, { cfg, apiKey, prompt, mat, acc }) {
   const model = cfg.model;
   const buf = Buffer.from(await deps.s3.getObjectBuffer({ bucket: deps.env.DATA_BUCKET, key: mat.key }));
   const text = renderPrompt(prompt, { NAME: mat.name, KIND: mat.kind });
-  const raw = await withRetry(deps, async () => {
-    if (model.provider === 'openai') return outlineViaOpenAI(deps, { model, apiKey, buf, mat, text, acc });
-    if (buf.length >= GEMINI_INLINE_MAX_BYTES) throw new MinutesError('provider', { message: 'PDF が大きすぎます' });
-    const req = buildGenerateRequest({
-      model: model.id, apiKey, prompt: text,
-      parts: [{ inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } }],
-      schema: toGeminiSchema(OUTLINE_SCHEMA), thinkingLevel: model.thinkingLevel, maxOutputTokens: OUTLINE_MAX_TOKENS,
+  const useFiles = model.provider !== 'openai' && buf.length >= GEMINI_INLINE_MAX_BYTES;
+  // 預けるのは 1 回だけ（withRetry のやり直しで預け直さない）
+  const uploaded = useFiles ? await uploadPdfToGemini(deps, { apiKey, buf, name: mat.id }) : null;
+  let raw;
+  try {
+    raw = await withRetry(deps, async () => {
+      if (model.provider === 'openai') return outlineViaOpenAI(deps, { model, apiKey, buf, mat, text, acc });
+      const req = buildGenerateRequest({
+        model: model.id, apiKey, prompt: text,
+        parts: [uploaded
+          ? { fileData: { mimeType: 'application/pdf', fileUri: uploaded.uri } }
+          : { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } }],
+        schema: toGeminiSchema(OUTLINE_SCHEMA), thinkingLevel: model.thinkingLevel, maxOutputTokens: OUTLINE_MAX_TOKENS,
+      });
+      const p = parseGenerateResponse(await post(deps, req, 'gemini'));
+      acc.inputTokens += p.usage?.inputTokens ?? 0;
+      acc.outputTokens += (p.usage?.outputTokens ?? 0) + (p.usage?.thoughtTokens ?? 0);
+      if (p.blocked) throw new MinutesError('blocked');
+      if (p.finishReason === 'MAX_TOKENS') throw new MinutesError('truncated');
+      return p.text ?? '';
     });
-    const p = parseGenerateResponse(await post(deps, req, 'gemini'));
-    acc.inputTokens += p.usage?.inputTokens ?? 0;
-    acc.outputTokens += (p.usage?.outputTokens ?? 0) + (p.usage?.thoughtTokens ?? 0);
-    if (p.blocked) throw new MinutesError('blocked');
-    if (p.finishReason === 'MAX_TOKENS') throw new MinutesError('truncated');
-    return p.text ?? '';
-  });
+  } finally {
+    if (uploaded) await deleteGeminiFile(deps, { apiKey, name: uploaded.name });
+  }
   const parsed = parseJsonOrTruncated(raw);
   if (!Array.isArray(parsed.sections)) throw new MinutesError('truncated');
   return parsed;
+}
+
+// 預けた PDF は読み終えたら消す。失敗しても無視する（48 時間で消える）
+async function deleteGeminiFile(deps, { apiKey, name }) {
+  try {
+    const del = buildFileDeleteRequest({ apiKey, name });
+    await deps.fetch(del.url, { method: del.method, headers: del.headers });
+  } catch {
+    console.error('minutes: gemini file delete failed');
+  }
+}
+
+// Gemini の Files API に PDF を預ける（再開可能アップロード: 開始 → 本体を upload, finalize）。ACTIVE になるまで待つ
+async function uploadPdfToGemini(deps, { apiKey, buf, name }) {
+  const start = buildFilesUploadRequest({ apiKey, mimeType: 'application/pdf', displayName: name, sizeBytes: buf.length });
+  const { uploadUrl } = await withRetry(deps, async () => {
+    let res;
+    try {
+      res = await deps.fetch(start.url, { method: start.method, headers: start.headers, body: start.body });
+    } catch {
+      throw new MinutesError('provider', { transient: true });
+    }
+    if (res.status < 200 || res.status >= 300) {
+      const c = classifyGeminiError({ status: res.status, json: await res.json().catch(() => null) });
+      throw new MinutesError(c.kind === 'rate_limited' ? 'provider' : c.kind, { transient: res.status === 429 || res.status >= 500 });
+    }
+    const u = parseFilesUploadStart(res.headers);
+    if (!u.uploadUrl) throw new MinutesError('provider', { message: 'PDF を読み込めませんでした' });
+    return u;
+  });
+  const json = await withRetry(deps, () => post(deps, {
+    url: uploadUrl, method: 'POST', headers: buildFilesUploadBodyHeaders({ sizeBytes: buf.length }), body: buf,
+  }, 'gemini'));
+  let f = parseFileResponse(json);
+  if (!f.name) throw new MinutesError('provider', { message: 'PDF を読み込めませんでした' });
+  try {
+    for (let waited = 0; f.state === 'PROCESSING'; waited += FILE_POLL_INTERVAL_MS) {
+      if (waited >= FILE_POLL_MAX_MS) throw new MinutesError('provider', { transient: true });
+      await deps.sleep(FILE_POLL_INTERVAL_MS);
+      f = parseFileResponse(await post(deps, buildFileGetRequest({ apiKey, name: f.name }), 'gemini'));
+    }
+    if (f.state === 'FAILED' || !f.uri) throw new MinutesError('provider', { message: 'PDF を読み込めませんでした' });
+  } catch (e) {
+    await deleteGeminiFile(deps, { apiKey, name: f.name });
+    throw e;
+  }
+  return { name: f.name, uri: f.uri };
 }
 
 // OpenAI は /v1/files に預けて input_file で渡し、使い終えたら消す（預けたファイルを残さないため）

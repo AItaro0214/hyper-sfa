@@ -66,3 +66,14 @@ test('モデルの用途 qa', () => {
   assert.ok(!DEFAULT_MODELS.filter((m) => m.uses.length === 1 && m.uses[0] === 'transcribe').some((m) => m.uses.includes('qa')));
   assert.ok(DEFAULT_MODELS.find((m) => m.id === DEFAULT_SELECTION.qa).uses.includes('qa'));
 });
+
+test('safetySettings は body にそのまま入る（SAFETY_BLOCK_NONE は 4 区分）', async () => {
+  const { buildGenerateRequest, SAFETY_BLOCK_NONE } = await import('../src/index.js');
+  assert.equal(SAFETY_BLOCK_NONE.length, 4);
+  assert.ok(SAFETY_BLOCK_NONE.every((s) => s.threshold === 'BLOCK_NONE'));
+  const r = buildGenerateRequest({ model: 'gemini-3.5-flash-lite', apiKey: 'k', prompt: 'p', safetySettings: SAFETY_BLOCK_NONE });
+  assert.deepEqual(JSON.parse(r.body).safetySettings, SAFETY_BLOCK_NONE);
+  const c = buildChatGenerateRequest({ model: 'gemini-3.5-flash-lite', apiKey: 'k', systemText: 's', turns: [{ role: 'user', text: 'q' }], safetySettings: SAFETY_BLOCK_NONE });
+  assert.deepEqual(JSON.parse(c.body).safetySettings, SAFETY_BLOCK_NONE);
+  assert.equal('safetySettings' in JSON.parse(buildGenerateRequest({ model: 'm', apiKey: 'k', prompt: 'p' }).body), false);
+});

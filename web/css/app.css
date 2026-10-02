@@ -499,3 +499,7 @@ body.panel-open { overflow: hidden; }
   .pos-name, .pos-level { grid-column: 1 / -1; }
   .pos-lab { display: block; }
 }
+
+/* 編集フォームの一番下の削除。保存のボタンから離して、押し間違いを防ぐ */
+.danger-zone { margin: 28px 0 8px; padding-top: 16px; border-top: 1px dashed var(--danger-line); display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.danger-zone p { margin: 0; }

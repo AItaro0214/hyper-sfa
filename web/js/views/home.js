@@ -2,7 +2,7 @@
 // （入力のたびに全体を描くと日本語入力の変換が壊れるため）。
 import { api } from '../api.js';
 import { state } from '../state.js';
-import { esc, el, chip, toast, onTextInput, errorMessage, skeletonRows } from '../ui.js';
+import { esc, el, chip, toast, confirmDialog, onTextInput, errorMessage, skeletonRows } from '../ui.js';
 import { icon } from '../icons.js';
 import { STATUS_LABEL, mountCardForm, cardViewHtml, bindZoom } from './cardEdit.js';
 
@@ -111,6 +111,17 @@ export async function renderHome(container, _p, query, minutesMod) {
     countEl.textContent = total !== null ? `${total} 件` : '';
     moreBtn.hidden = !nextCursor;
   }
+  async function deleteCard(card) {
+    if (!(await confirmDialog('この名刺を削除しますか？', { okLabel: '削除する', danger: true }))) return;
+    try {
+      await api.del(`/api/cards/${encodeURIComponent(card.id)}`);
+      items = items.filter((x) => x.id !== card.id);
+      listEl.querySelector(`[data-id="${CSS.escape(card.id)}"]`)?.remove();
+      closePanel();
+      toast('削除しました');
+    } catch (e) { toast(errorMessage(e), 'error'); }
+  }
+
   function replaceRow(card) {
     const i = items.findIndex((x) => x.id === card.id);
     if (i < 0) return;
@@ -177,7 +188,10 @@ export async function renderHome(container, _p, query, minutesMod) {
     document.body.classList.add('panel-open');
     if (editBtn) {
       panelBody.replaceChildren();
-      await mountCardForm(panelBody, { card, source: 'search', onCancel: closePanel, onSaved: (saved) => { replaceRow(saved); closePanel(); } });
+      await mountCardForm(panelBody, {
+        card, source: 'search', onCancel: closePanel, onSaved: (saved) => { replaceRow(saved); closePanel(); },
+        onDelete: caps.deleteAnyCard ? deleteCard : undefined,
+      });
     } else {
       panelBody.innerHTML = cardViewHtml(card) + `<p><a class="btn" href="/cards/${encodeURIComponent(card.id)}">詳細を開く</a></p>`;
       bindZoom(panelBody);

@@ -5,6 +5,7 @@ import { api, ApiError } from '../api.js';
 import { optimizeCardImages } from '../imageUtil.js';
 import { state } from '../state.js';
 import { esc, el, openModal, toast } from '../ui.js';
+import { icon } from '../icons.js';
 
 export const STATUS_LABEL = { processing: '読み取り中', review: '確認待ち', failed: '失敗', confirmed: '確認済み' };
 
@@ -35,7 +36,7 @@ const joinLines = (a) => (a || []).join('\n');
 
 // container に描く。返り値: { isDirty(), values() }
 export async function mountCardForm(container, opts) {
-  const { card, source, onSaved, onCancel, extraButtons = [], banner = '' } = opts;
+  const { card, source, onSaved, onCancel, onDelete, extraButtons = [], banner = '' } = opts;
   const caps = (state.me && state.me.capabilities) || {};
   const useDepts = !!state.config.features.departments;
   const depts = useDepts ? await loadDepartments() : [];
@@ -70,7 +71,11 @@ export async function mountCardForm(container, opts) {
       ${extraButtons.map((b, i) => `<button type="button" class="btn" data-extra="${i}">${esc(b.label)}</button>`).join('')}
       <button type="submit" class="btn btn-primary">${esc(opts.submitLabel || '保存')}</button>
     </div>
-  </form>`;
+  </form>
+  ${onDelete ? `<div class="danger-zone">
+    <p class="muted">この名刺を削除する（30 日は戻せます）。削除できるのは開発者だけです。</p>
+    <button type="button" class="btn btn-danger" data-delete>${icon('trash', 18)}この名刺を削除</button>
+  </div>` : ''}`;
   const form = container.querySelector('form');
   bindZoom(container);
 
@@ -141,6 +146,8 @@ export async function mountCardForm(container, opts) {
   const showErr = (m) => { errBox.textContent = m; errBox.hidden = false; };
 
   if (onCancel) form.querySelector('[data-cancel]').addEventListener('click', onCancel);
+  // 削除は保存の流れと分けて、フォームの一番下に置く（押し間違いを防ぐ。確認は呼び出し元で出す）
+  if (onDelete) container.querySelector('[data-delete]').addEventListener('click', () => onDelete(card));
   const handle = { isDirty: () => snapshot() !== initial, values: () => ({ ...read(), deptIds: [...selected] }) };
   extraButtons.forEach((b, i) => form.querySelector(`[data-extra="${i}"]`).addEventListener('click', () => b.onClick(handle)));
 

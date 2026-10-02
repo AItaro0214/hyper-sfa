@@ -53,11 +53,14 @@ export async function renderCardDetail(container, { id }) {
     root.querySelector('[data-edit]')?.addEventListener('click', async (e) => {
       e.target.closest('.actions').hidden = true;
       body.replaceChildren();
-      await mountCardForm(body, { card, source: 'detail', onCancel: () => show(card), onSaved: () => load() });
+      await mountCardForm(body, { card, source: 'detail', onCancel: () => show(card), onSaved: () => load(), onDelete: canDelete(card) ? del : undefined });
     });
-    root.querySelector('[data-del]')?.addEventListener('click', async () => {
+    async function del() {
       if (!(await confirmDialog('この名刺を削除しますか？', { okLabel: '削除する', danger: true }))) return;
       try { await api.del(path); toast('削除しました'); navigate('/'); } catch (e) { toast(errorMessage(e), 'error'); }
+    }
+    root.querySelector('[data-del]')?.addEventListener('click', async () => {
+      await del();
     });
     root.querySelector('[data-rescan]')?.addEventListener('click', async () => {
       if (card.status === 'confirmed' && !(await confirmDialog('直した内容は置き換わります。読み取り直しますか？', { okLabel: '読み取り直す' }))) return;

@@ -27,7 +27,8 @@ export async function renderCardDetail(container, { id }) {
   }
 
   function canDelete(card) {
-    return !!caps.deleteAnyCard || (!!caps.editCards && card.createdBy && card.createdBy.id === state.me.id);
+    // 削除は開発者だけ。登録の途中の自分の下書きは取りやめられる
+    return !!caps.deleteAnyCard || (card.status !== 'confirmed' && card.createdBy && card.createdBy.id === state.me.id);
   }
 
   function show(card) {

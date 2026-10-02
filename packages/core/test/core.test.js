@@ -164,7 +164,7 @@ test('offsetTimestamps / joinSegments', () => {
 
 test('capabilitiesFor / levelFor / canSeeCard / canDeleteCard', () => {
   assert.equal(Object.values(capabilitiesFor('dev')).every(Boolean), true);
-  assert.deepEqual(Object.entries(capabilitiesFor('org_admin')).filter(([, v]) => !v).map(([k]) => k), ['dev']);
+  assert.deepEqual(Object.entries(capabilitiesFor('org_admin')).filter(([, v]) => !v).map(([k]) => k).sort(), ['deleteAnyCard', 'dev']);
   const cf = capabilitiesFor('org_edit');
   assert.deepEqual([cf.admin, cf.dev, cf.viewHistory, cf.deleteAnyCard, cf.seeAllCards, cf.editCards, cf.assignOtherDepts, cf.register], [false, false, false, false, true, true, true, true]);
   const de = capabilitiesFor('dept_edit');
@@ -176,8 +176,11 @@ test('capabilitiesFor / levelFor / canSeeCard / canDeleteCard', () => {
   const user = { id: 'u1', level: 'dept_edit', deptIds: ['d1'] };
   assert.equal(canSeeCard(user, { deptIds: ['d1', 'd2'] }), true);
   assert.equal(canSeeCard(user, { deptIds: ['d2'] }), false);
-  assert.equal(canDeleteCard(user, { createdBy: { id: 'u1' } }), true);
+  // 削除は開発者だけ。作成者でも、全社管理でも消せない
+  assert.equal(canDeleteCard(user, { createdBy: { id: 'u1' } }), false);
   assert.equal(canDeleteCard(user, { createdBy: { id: 'u2' } }), false);
+  assert.equal(canDeleteCard({ id: 'u3', level: 'org_admin' }, { createdBy: { id: 'u3' } }), false);
+  assert.equal(canDeleteCard({ id: 'u4', level: 'dev' }, { createdBy: { id: 'u1' } }), true);
 });
 
 test('renderPrompt', () => {

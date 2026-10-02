@@ -348,10 +348,13 @@ export function cardRoutes(app) {
     return c.json(rowToCard(await loadCard(c.env, row.id), { detail: true }));
   });
 
-  // 論理削除。30 日後にログイン時の掃除で画像ごと消える。メンバーも削除できる（cloudflare-small-design §4）
+  // 論理削除。30 日後にログイン時の掃除で画像ごと消える。管理者だけ（cloudflare-small-design §4）。
+  // 例外: 登録の途中（保存前）の自分の下書きは、本人が取りやめられる
   app.delete('/api/cards/:id', async (c) => {
     const user = c.get('user');
     const row = await loadCard(c.env, c.req.param('id'));
+    const ownDraft = row.created_by === user.id && row.status !== 'confirmed';
+    if (!ownDraft && user.role !== 'admin') throw new ApiError(403, 'forbidden', 'この名刺を削除する権限がありません');
     const now = nowIso();
     await c.env.DB.batch([
       c.env.DB.prepare('UPDATE cards SET deleted_at = ?, updated_by = ?, updated_at = ? WHERE id = ?').bind(now, user.id, now, row.id),

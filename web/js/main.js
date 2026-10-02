@@ -22,6 +22,7 @@ import { renderDevPrompts } from './views/dev/prompts.js';
 import { renderDevExport } from './views/dev/export.js';
 import { renderDevUsage } from './views/dev/usage.js';
 import { renderDevAudit } from './views/dev/audit.js';
+import { renderDevPositions } from './views/dev/positions.js';
 
 const app = document.getElementById('app');
 
@@ -62,6 +63,7 @@ function registerRoutes(minutesMod) {
   registerRoute('/developer/export', renderDevExport, { cap: 'dev' });
   registerRoute('/developer/usage', renderDevUsage, { cap: 'dev' });
   registerRoute('/developer/audit', renderDevAudit, { cap: 'dev' });
+  registerRoute('/developer/positions', renderDevPositions, { cap: 'dev' });
 }
 
 // 画面の出し分けは見た目だけ。本当の判定はサーバーがする。

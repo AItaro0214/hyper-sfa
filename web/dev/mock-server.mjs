@@ -17,6 +17,7 @@ const ME = {
   deptIds: ['d1'], departments: [{ id: 'd1', name: '営業部' }], mustChangePassword: false,
   capabilities: { seeAllCards: true, editCards: true, deleteAnyCard: true, assignOtherDepts: true, register: true, admin: true, dev: true, viewHistory: true },
 };
+let POSITIONS = [['開発者', 'dev'], ['役員', 'org_admin'], ['GM', 'org_admin'], ['SMG', 'org_admin'], ['MG', 'org_edit'], ['SubMG', 'org_edit'], ['EX', 'dept_edit'], ['社員A', 'dept_edit'], ['社員B', 'dept_view'], ['協力会社', 'dept_view']].map(([name, level], i) => ({ name, level, order: i + 1 }));
 const DEPTS = [{ id: 'd1', name: '営業部', order: 1, active: true }, { id: 'd2', name: '開発部', order: 2, active: true }, { id: 'd3', name: '総務部', order: 3, active: true }];
 const USERS = [
   { id: 'u1', email: 'admin@example.co.jp', loginId: 'admin', displayName: '山田 管理', position: '開発者', role: 'admin', deptIds: ['d1'], departments: [{ id: 'd1', name: '営業部' }], status: 'active', lastLoginAt: new Date().toISOString() },
@@ -257,7 +258,25 @@ async function api(req, res, url) {
   if (p === '/api/dev/usage/minutes') return send(res, 200, { items: [{ user: { id: 'u2', name: '佐藤 花子', departments: ['営業部'], status: 'active' }, recordings: 18, recordedSec: 52320, transcribe: { first: 18, retry: 2 }, summarize: { first: 18, retry: 5 }, qa: { count: 42 }, failed: 1, transcribedSec: 60000, inputTokens: 100, outputTokens: 50, cost: 2.31, lastUsedAt: new Date().toISOString() }, { user: { id: 'u1', name: '山田 管理', departments: ['営業部'], status: 'active' }, recordings: 3, recordedSec: 7800, transcribe: { first: 3, retry: 0 }, summarize: { first: 3, retry: 0 }, qa: { count: 7 }, failed: 0, transcribedSec: 7800, inputTokens: 10, outputTokens: 5, cost: 0.36, lastUsedAt: new Date().toISOString() }], total: { recordings: 21, recordedSec: 60120, transcribe: { first: 21, retry: 2 }, summarize: { first: 21, retry: 5 }, qa: { count: 49 }, failed: 1, cost: 2.67 } });
   if (p.startsWith('/api/dev/usage/minutes/')) return send(res, 200, { months: [{ month: '2026-09', recordedSec: 3600, transcribeCount: 3, cost: 0.5 }], events: [{ at: new Date().toISOString(), kind: 'transcribe', durationSec: 4320, modelId: 'gemini-3.5-flash-lite', ok: true, inputTokens: 144300, outputTokens: 27900, cost: 0.3 }] });
   if (p === '/api/dev/audit') return send(res, 200, { items: [{ at: new Date().toISOString(), actor: { name: '山田 管理' }, action: 'key.update', detail: { provider: 'gemini' } }], nextCursor: null });
-  if (p === '/api/dev/positions') return err(res, 404, 'not_found', 'なし');
+  if (p === '/api/dev/positions') {
+    if (m === 'GET') return send(res, 200, { items: POSITIONS });
+    // 画面確認用: 名前に「conflict」を含む行があれば 409、検証は AWS 版と同じ規則
+    const list = Array.isArray(body.items) ? body.items : [];
+    const errors = [], seen = new Set();
+    if (!list.length || list.length > 50) errors.push({ field: 'items', message: '1〜50 件で指定してください' });
+    list.forEach((it, i) => {
+      const name = typeof it.name === 'string' ? it.name.trim() : '';
+      if (!name || name.length > 30) errors.push({ field: `items[${i}].name`, message: '1〜30 文字' });
+      else if (seen.has(name.toLowerCase())) errors.push({ field: `items[${i}].name`, message: '重複しています' });
+      else seen.add(name.toLowerCase());
+      if (!['dev', 'org_admin', 'org_edit', 'dept_edit', 'dept_view'].includes(it.level)) errors.push({ field: `items[${i}].level`, message: 'dev / org_admin / org_edit / dept_edit / dept_view' });
+    });
+    if (errors.length) return err(res, 400, 'validation', '入力を確かめてください', errors);
+    if (list.some((it) => /conflict/i.test(it.name))) return err(res, 409, 'conflict', '使われている役職は消せません。先にその人たちの役職を変えてください');
+    if (!list.some((it) => it.level === 'dev')) return err(res, 409, 'conflict', '開発者が 1 人もいなくなる変更はできません');
+    POSITIONS = list.map((it, i) => ({ name: it.name.trim(), level: it.level, order: i + 1 }));
+    return send(res, 200, { items: POSITIONS });
+  }
   return err(res, 404, 'not_found', `モックに無い API: ${m} ${p}`);
 }
 

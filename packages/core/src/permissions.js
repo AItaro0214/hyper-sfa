@@ -37,7 +37,7 @@ export function capabilitiesFor(level) {
     case 'dev':
       break;
     case 'org_admin':
-      off('dev');
+      off('dev', 'deleteAnyCard');
       break;
     case 'org_edit':
       off('dev', 'admin', 'viewHistory', 'deleteAnyCard');
@@ -57,7 +57,6 @@ export function capabilitiesFor(level) {
 
 const overlaps = (a = [], b = []) => a.some((x) => b.includes(x));
 const userCaps = (user) => user?.capabilities ?? capabilitiesFor(user?.level);
-const creatorId = (card) => card?.createdBy?.id ?? card?.createdBy ?? null;
 
 /** 担当部署が自分の所属と重なる、または全部見られる段階。 */
 export function canSeeCard(user, card) {
@@ -70,12 +69,8 @@ export function canEditCard(user, card) {
   return userCaps(user).editCards === true && canSeeCard(user, card);
 }
 
-/** 削除。全社管理以上はすべて、それ以外の編集できる人は自分が登録したものだけ（§9.3）。 */
+/** 削除は開発者だけ（誤削除の防止。§9.3）。登録の途中の下書きを本人が取りやめるのは、呼び出し側の例外で扱う。 */
 export function canDeleteCard(user, card) {
   if (!user || !card) return false;
-  const caps = userCaps(user);
-  if (caps.deleteAnyCard) return true;
-  if (!caps.editCards) return false;
-  const id = creatorId(card);
-  return id != null && id === user.id;
+  return userCaps(user).deleteAnyCard === true;
 }

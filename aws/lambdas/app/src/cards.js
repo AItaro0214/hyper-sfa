@@ -357,7 +357,7 @@ export function registerCardRoutes(app, { index }) {
   app.delete('/api/cards/:id', async (c) => {
     const user = me(c);
     const item = await loadCard(user, c.req.param('id'));
-    // 保存前の名刺は、読み込んだ本人なら消せる。保存後は権限表のとおり（§9.3）
+    // 保存前の名刺は、読み込んだ本人なら消せる。保存後は開発者だけ（§9.3）
     const ownDraft = item.createdBy === user.id && item.status !== 'confirmed';
     if (!ownDraft && !canDeleteCard(user, item)) throw forbidden('この名刺を削除する権限がありません');
     const at = nowIso();

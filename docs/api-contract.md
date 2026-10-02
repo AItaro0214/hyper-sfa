@@ -69,7 +69,7 @@
 }
 ```
 
-権限の段階と `capabilities` の対応は `docs/design.md` §9。Cloudflare 版は `admin` → `dev`（全部 `true`）、`member` → `org_edit`（`admin` `dev` `viewHistory` は `false`、`seeAllCards` `editCards` `register` `deleteAnyCard` は `true`（全員が削除できる。cloudflare-small-design §4）、`assignOtherDepts` は `false`）。
+権限の段階と `capabilities` の対応は `docs/design.md` §9。Cloudflare 版は `admin` → `dev`（全部 `true`）、`member` → `org_edit`（`admin` `dev` `viewHistory` は `false`、`seeAllCards` `editCards` `register` は `true`、`assignOtherDepts` `deleteAnyCard` は `false`）。削除できるのは `admin` だけなので、`admin` の `deleteAnyCard` だけが `true`（cloudflare-small-design §4）。AWS 版も `dev` だけが `deleteAnyCard` が `true`（design §9）。
 
 想定外のエラーは `500 { "error": { "code": "internal", "message": "..." } }`。`409` の `version` 不一致には `error.current`（最新の名刺）を付ける。
 
@@ -126,7 +126,7 @@
 | `GET /api/cards` | 検索。`company` `name` `department` `phone` `email` `note`（備考と役職の両方に当てる） `owner`（利用者 ID）`from` `to`（登録日、`YYYY-MM-DD`）`status` `dept`（担当部署 ID）`cursor` `limit`。応答 `{ "items", "nextCursor", "total" }`。`items` は `rawText` 抜き |
 | `GET /api/cards/{id}` | 詳細 |
 | `PUT /api/cards/{id}` | `{ company, department, title, name, nameReading, phones, mobiles, emails, note, deptIds, version, source: "review" | "search" | "detail", confirm: true }`。`confirm: true` で `review` → `confirmed`。`version` 不一致は 409 |
-| `DELETE /api/cards/{id}` | 論理削除 |
+| `DELETE /api/cards/{id}` | 論理削除。開発者（Cloudflare 版は `admin`）だけ。登録の途中（`status` が `confirmed` でない）の自分の下書きは本人も可。それ以外は 403 `forbidden` |
 | `POST /api/cards/{id}/images/replace` | 画像を縮小して置き換えるための PUT 先。`{ "uploads": [{ "kind": "front" / "back", "url", "method": "PUT", "headers" }] }`。**既存のキーに上書きする。** 編集できる人だけ。15 分有効 |
 | `POST /api/cards/{id}/images/optimized` | 縮小済みの印を付ける。`{ "imageOptimized": true, "imageOptimizedAt" }`。`version` は増えず、履歴にも残らない |
 
@@ -176,7 +176,7 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 | `GET /api/dev/usage/minutes` | `from` `to` `dept` `includeUnused`。`{ "items": [{ "user": { id, name, departments, status }, "recordings", "recordedSec", "transcribe": { first, retry }, "summarize": { first, retry }, "failed", "transcribedSec", "inputTokens", "outputTokens", "cost", "lastUsedAt" }], "total": {...} }` |
 | `GET /api/dev/usage/minutes/{userId}` | `{ "months": [...], "events": [{ "at", "kind", "durationSec", "modelId", "ok", "failureKind", "inputTokens", "outputTokens", "cost" }] }` |
 | `GET /api/dev/audit` | `from` `to` `cursor`。`{ "items": [{ "at", "actor", "action", "detail" }] }` |
-| `GET /api/dev/positions` `PUT` | AWS 版だけ。`{ "items": [{ "name": "MG", "level": "org_edit", "order": 4 }] }` |
+| `GET /api/dev/positions` `PUT` | AWS 版だけ。`{ "items": [{ "name": "MG", "level": "org_edit", "order": 4 }] }`。開発コンソールの「役職と権限」。全体置き換え |
 
 ## 7. 議事録
 

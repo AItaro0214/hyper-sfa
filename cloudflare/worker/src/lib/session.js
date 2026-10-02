@@ -87,10 +87,9 @@ export function levelOf(user) {
 export function capabilitiesOf(user) {
   const caps = { ...capabilitiesFor(levelOf(user)) };
   // 部署の仕組みが無いので、member は他の部署に見せる操作を持たない（api-contract §2）。
-  // 削除は cloudflare-small-design §4 のとおり全員ができる（サーバー側の判定と一致させる）
+  // 削除は管理者（admin）だけ（cloudflare-small-design §4）。org_edit の既定どおり deleteAnyCard は false
   if (user.role === 'member') {
     caps.assignOtherDepts = false;
-    caps.deleteAnyCard = true;
   }
   return caps;
 }

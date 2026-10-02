@@ -474,3 +474,28 @@ body.panel-open { overflow: hidden; }
   .skel::after, #progress::before { animation: none; }
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
+
+/* 開発コンソール: 役職と権限。列は 並び / 役職名 / 段階 / 削除。狭い幅では 1 行を縦に積む */
+.pos-note { font-size: .88rem; margin: 0 0 8px; }
+.pos-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.pos-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 180px auto; gap: 10px; align-items: start; padding: 8px 10px; background: var(--glass); border: 1px solid var(--line); border-radius: var(--radius-s); }
+.pos-order { display: flex; gap: 4px; }
+.pos-order .btn { padding: 0; width: 40px; }
+.pos-name, .pos-level { display: block; min-width: 0; }
+.pos-lab { display: none; font-size: .78rem; color: var(--muted); margin-bottom: 2px; }
+.pos-del span { display: none; }
+.pos-del { padding: 0; width: 44px; min-height: var(--tap); }
+.pos-legend { margin-top: 24px; }
+.pos-legend h2 { font-size: 1rem; margin: 0 0 8px; }
+.pos-legend dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: .9rem; }
+.pos-legend dt { font-weight: 600; }
+.pos-legend dd { margin: 0; color: var(--muted); }
+@media (max-width: 640px) {
+  .pos-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .pos-order { grid-column: 1; grid-row: 1; }
+  .pos-del { grid-column: 2; grid-row: 1; justify-self: end; }
+  .pos-del span { display: inline; }
+  .pos-del { width: auto; padding: 0 12px; }
+  .pos-name, .pos-level { grid-column: 1 / -1; }
+  .pos-lab { display: block; }
+}

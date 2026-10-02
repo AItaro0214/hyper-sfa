@@ -9,6 +9,7 @@ const P = {
   play: '<path d="M7 5v14l12-7z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   pause: '<path d="M8 5v14M16 5v14"/>',
+  upload: '<path d="M12 16V4m0 0-4 4m4-4 4 4M5 19h14"/>',
   download: '<path d="M12 4v11m0 0-4-4m4 4 4-4M5 19h14"/>',
   share: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.2 10.8 7.6-3.6M8.2 13.2l7.6 3.6"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',

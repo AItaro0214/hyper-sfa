@@ -5,7 +5,7 @@ import { api } from '../../api.js';
 import { navigate } from '../../router.js';
 import { toast, formatDateTime } from '../../ui.js';
 import {
-  esc, statusChipHtml, statusText, isProcessing, clock, durationJa, counterpartLabel, renderMarkdown,
+  esc, statusChipHtml, modeBadgeHtml, statusText, isProcessing, clock, durationJa, counterpartLabel, renderMarkdown,
   ask, copyText, errMessage,
 } from './util.js';
 import { openShareDialog } from './share.js';
@@ -77,7 +77,7 @@ export function renderDetail(container, params) {
     }).join('、 ');
     container.innerHTML = `<div class="mn-page mn-detail">
       <p><a href="/minutes">← 議事録の一覧</a></p>
-      <div class="mn-head"><div><h1>${esc(m.title || '（無題）')}</h1>${statusChipHtml(m)}${m.relation === 'shared' ? '<span class="mn-badge">共有された</span>' : ''}</div>
+      <div class="mn-head"><div><h1>${esc(m.title || '（無題）')}</h1>${statusChipHtml(m)}${modeBadgeHtml(m)}${m.relation === 'shared' ? '<span class="mn-badge">共有された</span>' : ''}</div>
         <div class="mn-muted">${esc(formatDateTime(m.heldAt))}　${esc(durationJa(m.durationSec))}</div></div>
       <dl class="mn-meta">
         <dt>相手</dt><dd>${cps || '<span class="mn-muted">（なし）</span>'}</dd>

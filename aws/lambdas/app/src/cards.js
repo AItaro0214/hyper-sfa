@@ -1,5 +1,5 @@
 // 名刺の API（docs/api-contract.md §4、docs/design.md §4、§8、§9）。
-import { canEditCard, canDeleteCard, ulid, searchKeys, truncate } from '@hyper-sfa/core';
+import { canEditCard, canDeleteCard, ulid, searchKeys, truncate, groupByCompany } from '@hyper-sfa/core';
 import {
   ddb, K, s3, invokeAsync, audit, isConditionFailed,
   forbidden, conflict, validation, readJson, parseLimit, encodeCursor, decodeCursor,
@@ -240,6 +240,16 @@ export function registerCardRoutes(app, { index }) {
     const r = await index.search({ user, params: q, limit, cursor: decodeCursor(q.cursor) });
     const items = await Promise.all(r.entries.map((e) => presentCard(e.item)));
     return c.json({ items, nextCursor: r.nextCursor ? encodeCursor(r.nextCursor) : null, total: r.total });
+  });
+
+  // 取引先（会社 → 部署 → 人）。見える範囲の確認済みの名刺から作る。
+  // gsi1 の INCLUDE は上限の 20 属性を使い切っていて title を載せられないので、人は { id, name } だけ返す
+  app.get('/api/companies', async (c) => {
+    const user = me(c);
+    const q = c.req.query();
+    const items = groupByCompany(await index.visibleConfirmed(user), { q: q.q, limit: q.limit });
+    for (const g of items) for (const d of g.departments) for (const p of d.people) delete p.title;
+    return c.json({ items });
   });
 
   app.get('/api/cards/:id', async (c) => {

@@ -344,7 +344,12 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
           .bind(minuteId)
           .all()
       ).results.map((r) => r.display_name);
-      const tModel = await deps.getModel(env, await deps.getSelectedModel(env, 'transcribe'));
+      let tModel = await deps.getModel(env, await deps.getSelectedModel(env, 'transcribe'));
+      // 音声ファイルのアップロード（1 本のまま 1 区切り）は、Gemini の Files API で 1 回で起こす。
+      // OpenAI の文字起こしは音声を Worker のメモリに読み込む上に 25MB 前後の上限があり、最長 60 分・100MB のファイルを扱えないため
+      if (m.mode === 'upload' && segs.length === 1 && tModel?.provider !== 'gemini' && deps.DEFAULT_SELECTION?.transcribe) {
+        tModel = await deps.getModel(env, deps.DEFAULT_SELECTION.transcribe);
+      }
       const sModel = await deps.getModel(env, await deps.getSelectedModel(env, 'summarize'));
       const configErr = async (model, label) => {
         if (!model) return `${label}のモデルが設定されていません`;
@@ -377,6 +382,7 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
         // すでに版があれば、これは「やり直し」として数える
         transcribeIsRetry: (m.transcript_version ?? 0) > 0,
         summarizeIsRetry: (m.summary_version ?? 0) > 0,
+        isUpload: m.mode === 'upload',
         segments: segs,
         vars: buildVars(m, cps, ats),
         tModel,
@@ -466,14 +472,19 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
                 model,
                 prompt: transcribePrompt,
                 parts: [{ fileData: { fileUri: file.uri, mimeType: file.mimeType || mimeType } }],
-                maxOutputTokens: 16384,
+                // 60 分のファイルは 10 分の区切りより出力が多い。上限は Gemini の最大に合わせる
+                maxOutputTokens: loaded.isUpload ? 65536 : 16384,
               });
             } else {
               // OpenAI のプロンプトは短い手がかりだけ（長いと受け付けないモデルがある）
               const hint = `会議: ${loaded.vars.TITLE}。相手: ${loaded.vars.COUNTERPARTS}。同席: ${loaded.vars.ATTENDEES}`.slice(0, 400);
               r = await callOpenAITranscribe({ env, deps, apiKey, model, key: seg.key, mimeType, prompt: hint });
             }
-          } catch (e) {
+          } catch (e0) {
+            // 1 本のままの音声が出力の上限で切れたら、何度やっても同じ。分けて上げ直してもらう
+            const e = loaded.isUpload && e0 instanceof StepError && e0.kind === 'truncated'
+              ? new StepError('truncated', '60 分以内に分けて上げてください', false)
+              : e0;
             await recordUse(env, deps, { kind: 'transcribe', userId: loaded.owner, model, ok: false, failureKind: toFailure(e).kind, retry: loaded.transcribeIsRetry });
             throw e;
           }

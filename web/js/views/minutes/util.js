@@ -38,6 +38,11 @@ export function statusChipHtml(m) {
   return `<span class="mn-status mn-status-${cls}">${esc(statusText(m))}</span>`;
 }
 
+// 音声ファイルから作った議事録の印
+export function modeBadgeHtml(m) {
+  return m && m.mode === 'upload' ? '<span class="mn-badge mn-badge-file">ファイル</span>' : '';
+}
+
 // 2:05:09 / 12:05 の形。
 export function clock(sec) {
   sec = Math.max(0, Math.floor(sec || 0));

@@ -503,3 +503,40 @@ body.panel-open { overflow: hidden; }
 /* 編集フォームの一番下の削除。保存のボタンから離して、押し間違いを防ぐ */
 .danger-zone { margin: 28px 0 8px; padding-top: 16px; border-top: 1px dashed var(--danger-line); display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
 .danger-zone p { margin: 0; }
+
+/* ---- 取引先の候補と木 ---- */
+.cs-host { position: relative; }
+.cs-box { position: absolute; left: 0; right: 0; top: 100%; z-index: 60; margin-top: 4px; max-height: 320px; overflow-y: auto; border: 1px solid var(--line-hi); border-radius: var(--radius-s); background: color-mix(in srgb, var(--glass-solid) 88%, transparent); -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur)); box-shadow: var(--shadow); }
+.cs-box[hidden] { display: none; }
+.cs-head { padding: 8px 12px 4px; font-size: .72rem; color: var(--muted); letter-spacing: .04em; }
+.cs-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: var(--tap); padding: 8px 12px; border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.cs-item:last-child { border-bottom: 0; }
+.cs-item:hover, .cs-item.on { background: var(--accent-soft); }
+.cs-name { font-weight: 600; overflow-wrap: anywhere; }
+.cs-meta { flex: none; font-size: .78rem; color: var(--muted); }
+.cs-similar { margin: 6px 0 0; font-size: .85rem; color: var(--muted); }
+.cs-similar[hidden] { display: none; }
+.cs-similar button { min-height: 44px; margin-top: 4px; padding: 4px 12px; border: 1px solid var(--accent-mid); border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font: inherit; cursor: pointer; text-align: left; }
+.ct { display: flex; flex-direction: column; gap: 8px; }
+.ct summary { display: flex; align-items: center; gap: 8px; min-height: var(--tap); padding: 6px 12px; cursor: pointer; list-style: none; }
+.ct summary::-webkit-details-marker { display: none; }
+.ct summary::before { content: ""; flex: none; width: 7px; height: 7px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform .15s var(--ease); }
+.ct details[open] > summary::before { transform: rotate(45deg); }
+.ct summary .ct-name { flex: 1; overflow-wrap: anywhere; }
+.ct-count { flex: none; font-size: .78rem; color: var(--muted); }
+.ct-co { border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--glass); }
+.ct-co > summary { font-weight: 600; }
+.ct-co[open] > summary { border-bottom: 1px solid var(--line); }
+.ct-body { padding: 4px 0 4px 10px; }
+.ct-dep > summary { font-size: .92rem; }
+.ct-people { list-style: none; margin: 0; padding: 0 0 4px 18px; }
+.ct-person { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; width: 100%; min-height: var(--tap); padding: 8px 12px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; text-align: left; text-decoration: none; cursor: pointer; box-sizing: border-box; }
+.ct-person:hover { background: var(--accent-soft); }
+.ct-person span { color: var(--muted); font-size: .85rem; }
+.ct-empty { padding: 12px; }
+.view-switch { display: flex; gap: 8px; margin: 10px 0; }
+.view-switch .pill { min-height: 44px; }
+/* 取引先ごとの表示では会社名の欄だけが効く */
+.home.tree-mode .f-name, .home.tree-mode details.more, .home.tree-mode [data-chips] { display: none; }
+.home.tree-mode .search-basic { grid-template-columns: 1fr; }
+@media (min-width: 900px) { .home.tree-mode .search-basic { grid-template-columns: 1fr auto; } }

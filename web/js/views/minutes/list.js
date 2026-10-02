@@ -3,15 +3,16 @@ import { api } from '../../api.js';
 import { navigate } from '../../router.js';
 import { formatDateTime } from '../../ui.js';
 import { icon } from '../../icons.js';
-import { esc, statusChipHtml, clock, counterpartLabel, toQuery, itemsOf, errMessage, deptNames } from './util.js';
+import { esc, statusChipHtml, modeBadgeHtml, clock, counterpartLabel, toQuery, itemsOf, errMessage, deptNames } from './util.js';
 import { pickCard, loadDirectory } from './pickers.js';
+import { mountCompanySuggest } from '../../companyPicker.js';
 import { checkRecovery } from '../../recorder/recovery.js';
 import { hasActiveSession } from './new.js';
 
 const TABS = [['owner', '自分が作った'], ['shared', '共有された'], ['all', 'すべて']];
 
 // 戻ってきたときに条件を保つ
-const saved = { relation: 'all', company: '', name: '', cardId: '', cardLabel: '', attendee: '', from: '', to: '', title: '', owner: '' };
+const saved = { relation: 'all', company: '', department: '', name: '', cardId: '', cardLabel: '', attendee: '', from: '', to: '', title: '', owner: '' };
 
 export function renderList(container, _params, query = {}) {
   // 名刺の画面などから ?cardId= で来たとき
@@ -27,6 +28,7 @@ export function renderList(container, _params, query = {}) {
       <div class="mn-tabs" role="tablist">${TABS.map(([k, l]) => `<button role="tab" class="mn-tab" data-tab="${k}">${l}</button>`).join('')}</div>
       <form class="mn-search" data-f="search">
         <label>相手の会社名 <input class="mn-input" name="company" autocomplete="off"></label>
+        <label data-dept-wrap hidden>相手の部署 <select class="mn-input" name="department"><option value="">すべての部署</option></select></label>
         <label>相手の氏名 <input class="mn-input" name="name" autocomplete="off"></label>
         <button type="button" class="mn-btn" data-pick>名刺から選ぶ</button>
         <button type="submit" class="mn-btn mn-btn-primary">検索</button>
@@ -56,8 +58,30 @@ export function renderList(container, _params, query = {}) {
     b.setAttribute('aria-selected', String(on));
   });
 
+  // 会社を選ぶと、その会社の部署を選べる。会社名を打ち替えたら部署は外す
+  const deptSel = form.elements.department;
+  const deptWrap = container.querySelector('[data-dept-wrap]');
+  const setDepts = (names) => {
+    deptSel.innerHTML = '<option value="">すべての部署</option>' + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    deptSel.value = f.department && names.includes(f.department) ? f.department : '';
+    deptWrap.hidden = !names.length;
+  };
+  mountCompanySuggest(form.elements.company, {
+    onPick: ({ company, departments }) => {
+      form.elements.company.value = company;
+      f.company = company; f.department = '';
+      setDepts(departments);
+      run();
+    },
+  });
+  form.elements.company.addEventListener('input', () => { f.department = ''; setDepts([]); });
+  // 戻ってきたときは、選んでいた部署だけを出しておく（会社を選び直せば全部署が出る）
+  if (f.department && f.company) setDepts([f.department]);
+  deptSel.addEventListener('change', () => { f.department = deptSel.value; run(); });
+
   const readForm = () => {
     for (const k of ['company', 'name', 'from', 'to', 'title']) f[k] = form.elements[k].value.trim();
+    f.department = deptSel.value;
     f.attendee = form.elements.attendee.value;
     f.owner = form.elements.owner.value;
   };
@@ -66,6 +90,7 @@ export function renderList(container, _params, query = {}) {
   const paintChips = () => {
     const c = [];
     if (f.company) c.push(['company', `相手の会社名: ${f.company}`]);
+    if (f.department) c.push(['department', `部署: ${f.department}`]);
     if (f.name) c.push(['name', `相手の氏名: ${f.name}`]);
     if (f.cardId) c.push(['cardId', `名刺: ${f.cardLabel}`]);
     if (f.attendee) c.push(['attendee', `同席者: ${userName(f.attendee)}`]);
@@ -83,7 +108,7 @@ export function renderList(container, _params, query = {}) {
       <span class="mn-r-title">${esc(m.title || '（無題）')}</span>
       <span class="mn-r-people">${esc(people)}</span>
       <span class="mn-r-dur">${esc(clock(m.durationSec))}</span>
-      <span class="mn-r-st">${statusChipHtml(m)}${m.relation === 'shared' ? '<span class="mn-badge">共有された</span>' : ''}</span>
+      <span class="mn-r-st">${statusChipHtml(m)}${modeBadgeHtml(m)}${m.relation === 'shared' ? '<span class="mn-badge">共有された</span>' : ''}</span>
     </a>`;
   };
 
@@ -92,7 +117,7 @@ export function renderList(container, _params, query = {}) {
     if (!cursor) resultsEl.innerHTML = '<div aria-hidden="true">' + '<div class="skel mn-skel"></div>'.repeat(5) + '</div>';
     try {
       const r = await api.get('/api/minutes', toQuery({
-        relation: f.relation, company: f.company, name: f.name, cardId: f.cardId, attendee: f.attendee,
+        relation: f.relation, company: f.company, department: f.department, name: f.name, cardId: f.cardId, attendee: f.attendee,
         from: f.from, to: f.to, title: f.title, owner: f.owner, cursor,
       }));
       if (my !== seq || !container.isConnected) return;
@@ -124,6 +149,8 @@ export function renderList(container, _params, query = {}) {
       const k = clr.dataset.clear;
       f[k] = '';
       if (k === 'cardId') f.cardLabel = '';
+      if (k === 'company') { f.department = ''; setDepts([]); }
+      if (k === 'department') deptSel.value = '';
       if (form.elements[k]) form.elements[k].value = '';
       run();
       return;

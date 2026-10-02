@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { esc, el, chip, toast, confirmDialog, onTextInput, errorMessage, skeletonRows } from '../ui.js';
 import { icon } from '../icons.js';
+import { fetchCompanies, companyTreeHtml } from '../companyPicker.js';
 import { STATUS_LABEL, mountCardForm, cardViewHtml, bindZoom } from './cardEdit.js';
 
 const FIELDS = [
@@ -22,13 +23,19 @@ export async function renderHome(container, _p, query, minutesMod) {
   for (const k of ['company', 'name', 'department', 'phone', 'email', 'note', 'owner', 'from', 'to', 'dept']) if (query[k]) cond[k] = query[k];
   let items = [], nextCursor = null, total = null, loading = false, seq = 0;
   let directory = [], depts = [];
+  let view = query.view === 'companies' ? 'companies' : 'list'; // 取引先ごとの表示は URL に残す
+  let tree = [];
   let fresh = true; // 検索し直した直後の描画だけ、行を順に出す（「もっと見る」で再生し直さない）
 
-  container.innerHTML = `<div class="page home">
+  container.innerHTML = `<div class="page home ${view === 'companies' ? 'tree-mode' : ''}">
     <div class="page-head"><h1>名刺を探す</h1>${state.config.features.minutes ? '<div id="home-minutes"></div>' : ''}</div>
+    <div class="view-switch" role="group" aria-label="表示の切り替え">
+      <button type="button" class="pill ${view === 'list' ? 'on' : ''}" data-view-mode="list" aria-pressed="${view === 'list'}">一覧</button>
+      <button type="button" class="pill ${view === 'companies' ? 'on' : ''}" data-view-mode="companies" aria-pressed="${view === 'companies'}">取引先ごと</button>
+    </div>
     <form class="search" novalidate role="search">
       <div class="search-basic">
-        ${FIELDS.filter((f) => f.basic).map((f) => `<label class="field"><span>${f.label}</span><input type="search" name="${f.key}" value="${esc(cond[f.key] || '')}" autocomplete="off" enterkeyhint="search"></label>`).join('')}
+        ${FIELDS.filter((f) => f.basic).map((f) => `<label class="field f-${f.key}"><span>${f.label}</span><input type="search" name="${f.key}" value="${esc(cond[f.key] || '')}" autocomplete="off" enterkeyhint="search"></label>`).join('')}
         <button type="submit" class="btn btn-primary">${icon('search')}検索</button>
       </div>
       <details class="more" ${Object.keys(cond).some((k) => !['company', 'name'].includes(k)) ? 'open' : ''}>
@@ -131,10 +138,29 @@ export async function renderHome(container, _p, query, minutesMod) {
   }
 
   function syncUrl() {
-    const q = new URLSearchParams(cond).toString();
+    // 取引先ごとの表示では、会社名だけが効く
+    const q = new URLSearchParams(view === 'companies' ? { view, ...(cond.company ? { company: cond.company } : {}) } : cond).toString();
     history.replaceState(null, '', q ? `/?${q}` : '/');
   }
+  async function fetchTree() {
+    const my = ++seq;
+    loading = true;
+    items = []; nextCursor = null; total = null;
+    listEl.innerHTML = skeletonRows(4);
+    try {
+      tree = await fetchCompanies({ q: cond.company || '', limit: 100 });
+      if (my !== seq) return;
+      listEl.innerHTML = companyTreeHtml(tree, { hrefOf: (p) => `/cards/${encodeURIComponent(p.id)}` });
+      countEl.textContent = `${tree.length} 社`;
+      moreBtn.hidden = true;
+    } catch (e) {
+      if (my !== seq) return;
+      listEl.innerHTML = '';
+      toast(errorMessage(e), 'error');
+    } finally { if (my === seq) loading = false; }
+  }
   async function fetchPage(reset) {
+    if (view === 'companies') return fetchTree();
     const my = ++seq;
     loading = true;
     if (reset) { items = []; nextCursor = null; total = null; fresh = true; listEl.innerHTML = skeletonRows(5); }
@@ -167,6 +193,15 @@ export async function renderHome(container, _p, query, minutesMod) {
     if (!b) return;
     if (cond.dept === b.dataset.dept) delete cond.dept; else cond.dept = b.dataset.dept;
     renderDeptPills();
+    search();
+  });
+  container.querySelector('.view-switch').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-view-mode]');
+    if (!b || b.dataset.viewMode === view) return;
+    view = b.dataset.viewMode;
+    container.querySelector('.home').classList.toggle('tree-mode', view === 'companies');
+    container.querySelectorAll('[data-view-mode]').forEach((x) => { const on = x.dataset.viewMode === view; x.classList.toggle('on', on); x.setAttribute('aria-pressed', String(on)); });
+    closePanel();
     search();
   });
   moreBtn.addEventListener('click', () => { if (!loading && nextCursor) fetchPage(false); });

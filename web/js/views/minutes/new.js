@@ -14,11 +14,13 @@ import { Segmenter } from '../../recorder/segmenter.js';
 import { uploadFullAudio, sleep } from '../../recorder/upload.js';
 import { esc, clock, ask, debounce, errMessage } from './util.js';
 import { mountPeopleEditor, peopleToPayload } from './pickers.js';
+import { paintUpload, newUploadSession } from './upload.js';
 
 let session = null;
 
 export function hasActiveSession() {
-  return !!session;
+  // ファイルを選ぶ前の状態は「録音中」ではない
+  return !!session && !(session.kind === 'upload' && session.phase === 'upload' && session.up.stage !== 'sending');
 }
 
 const TELL = '<div class="mn-notice">録音することを、相手に伝えてください。</div>';
@@ -41,6 +43,11 @@ function paintPhase(view) {
   if (session.phase === 'recording') paintRecording(view);
   else if (session.phase === 'finishing') paintFinishing(view);
   else if (session.phase === 'confirm') paintConfirm(view);
+  else if (session.phase === 'upload') {
+    const s = session;
+    s.onBack = () => { session = null; if (alive(s.view)) paintChoose(s.view); };
+    paintUpload(view, s, { onBack: s.onBack, onDone: () => { s.phase = 'confirm'; if (alive(s.view)) paintConfirm(s.view); } });
+  }
 }
 
 // ---- 1. 種類を選ぶ ----
@@ -49,7 +56,7 @@ function paintChoose(view) {
   const room = roomUnavailableReason();
   const card = (kind, title, desc, reason) => `
     <button class="mn-kind" data-kind="${kind}" ${reason ? 'disabled' : ''}>
-      ${icon(kind === 'web' ? 'screen' : 'mic', 40)}<strong>${title}</strong><span>${desc}</span>
+      ${icon(kind === 'web' ? 'screen' : kind === 'upload' ? 'upload' : 'mic', 40)}<strong>${title}</strong><span>${desc}</span>
       ${reason ? `<em class="mn-reason">${esc(reason)}</em>` : ''}
     </button>`;
   view.container.innerHTML = `<div class="mn-page mn-narrow">
@@ -58,10 +65,13 @@ function paintChoose(view) {
     <div class="mn-kinds">
       ${card('web', 'ウェブ会議を録音', 'パソコンから出る音とマイクの音を録音します', web)}
       ${card('room', 'ここの音声を録音', 'この端末のマイクで、その場の音を録音します', room)}
+      ${card('upload', '音声ファイルを上げる', 'ボイスメモや会議の録画の音声を上げて文字起こしします', '')}
     </div></div>`;
   view.container.querySelector('.mn-kinds').addEventListener('click', (e) => {
     const b = e.target.closest('[data-kind]');
-    if (b && !b.disabled) paintGuide(view, b.dataset.kind);
+    if (!b || b.disabled) return;
+    if (b.dataset.kind === 'upload') { session = newUploadSession(state.me); paintPhase(view); return; }
+    paintGuide(view, b.dataset.kind);
   });
 }
 
@@ -349,6 +359,7 @@ function paintFinishingCount(view) {
 function paintConfirm(view) {
   const s = session;
   view.container.innerHTML = `<div class="mn-page mn-narrow">
+    ${s.kind === 'upload' ? '<p class="mn-done"><strong>アップロードが終わりました。</strong></p>' : ''}
     <h1>相手と同席者を確かめる</h1>
     <p class="mn-muted">ここに入れた名前は、文字起こしで話している人の名前や会社名の表記に使います。</p>
     <label class="mn-field"><span class="mn-label">タイトル</span><input class="mn-input" data-f="title"></label>

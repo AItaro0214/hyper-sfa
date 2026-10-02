@@ -1,6 +1,7 @@
 // 「名刺から選ぶ」と「ユーザーから選ぶ」の共通部品。
 import { api } from '../../api.js';
 import { state } from '../../state.js';
+import { fetchCompanies, companyTreeHtml, treeTarget } from '../../companyPicker.js';
 import { esc, showModal, itemsOf, deptNames, errMessage, counterpartLabel, toQuery } from './util.js';
 
 let dirCache = null;
@@ -24,11 +25,11 @@ export function pickCard({ title = '商談の相手を選ぶ' } = {}) {
       onClose: () => resolve(picked),
       html: `
         <form class="mn-form-row" data-f="search">
-          <label>会社名 <input class="mn-input" name="company" autocomplete="off"></label>
+          <label>会社名 <input class="mn-input" name="company" autocomplete="off" placeholder="入れるたびに絞り込みます"></label>
           <label>氏名 <input class="mn-input" name="name" autocomplete="off"></label>
           <button class="mn-btn mn-btn-primary" type="submit">探す</button>
         </form>
-        <div class="mn-pick-results" data-r="results" aria-live="polite"><p class="mn-muted">会社名か氏名を入れて探してください。</p></div>
+        <div class="mn-pick-results" data-r="results" aria-live="polite"><p class="mn-muted">読み込んでいます…</p></div>
         <details class="mn-fold"><summary>名刺が無い相手を、手で入力する</summary>
           <form class="mn-manual" data-f="manual">
             <label>会社名 <input class="mn-input" name="company"></label>
@@ -40,33 +41,65 @@ export function pickCard({ title = '商談の相手を選ぶ' } = {}) {
         </details>`,
     });
     const results = m.el.querySelector('[data-r=results]');
+    const searchForm = m.el.querySelector('[data-f=search]');
     const finish = (v) => { picked = v; m.close(v); };
+    let seq = 0; // 古い応答で新しい結果を上書きしない
+    let tree = [];
+    let cardList = [];
 
-    m.el.querySelector('[data-f=search]').addEventListener('submit', async (ev) => {
-      ev.preventDefault();
-      const fd = new FormData(ev.currentTarget);
-      const company = String(fd.get('company')).trim();
-      const name = String(fd.get('name')).trim();
-      if (!company && !name) { results.innerHTML = '<p class="mn-muted">会社名か氏名を入れてください。</p>'; return; }
+    // 会社名の欄: 会社 → 部署 → 人の木。何も入れなければ件数の多い取引先を出す
+    const loadTree = async () => {
+      const my = ++seq;
+      const q = searchForm.elements.company.value.trim();
       results.innerHTML = '<p class="mn-muted">探しています…</p>';
       try {
-        const r = await api.get('/api/cards', toQuery({ company, name, limit: 20 }));
-        const cards = itemsOf(r);
+        const items = await fetchCompanies({ q, limit: 20 });
+        if (my !== seq) return;
+        tree = items;
+        cardList = [];
+        results.innerHTML = items.length ? companyTreeHtml(items) : '<p class="mn-muted">見つかりませんでした。下の「手で入力する」も使えます。</p>';
+      } catch (e) {
+        if (my === seq) results.innerHTML = `<p class="mn-error">${esc(errMessage(e))}</p>`;
+      }
+    };
+    // 氏名の欄: 従来どおり名刺を直接探す
+    const loadByName = async () => {
+      const my = ++seq;
+      const company = searchForm.elements.company.value.trim();
+      const name = searchForm.elements.name.value.trim();
+      results.innerHTML = '<p class="mn-muted">探しています…</p>';
+      try {
+        const cards = itemsOf(await api.get('/api/cards', toQuery({ company, name, limit: 20 })));
+        if (my !== seq) return;
+        tree = [];
+        cardList = cards;
         if (!cards.length) { results.innerHTML = '<p class="mn-muted">見つかりませんでした。下の「手で入力する」も使えます。</p>'; return; }
         results.innerHTML = `<ul class="mn-pick-list">${cards.map((c, i) => `
           <li><button type="button" class="mn-pick-item" data-i="${i}">
             <strong>${esc(c.name || '')}</strong><span>${esc(c.company || '')}${c.department ? ' ' + esc(c.department) : ''}</span>
           </button></li>`).join('')}</ul>`;
-        results.onclick = (e) => {
-          const b = e.target.closest('[data-i]');
-          if (!b) return;
-          const c = cards[Number(b.dataset.i)];
-          finish({ cardId: c.id, company: c.company || '', department: c.department || '', name: c.name || '' });
-        };
       } catch (e) {
-        results.innerHTML = `<p class="mn-error">${esc(errMessage(e))}</p>`;
+        if (my === seq) results.innerHTML = `<p class="mn-error">${esc(errMessage(e))}</p>`;
       }
-    });
+    };
+    const run = () => (searchForm.elements.name.value.trim() ? loadByName() : loadTree());
+
+    results.onclick = (e) => {
+      const b = e.target.closest('[data-i]');
+      if (b && cardList[Number(b.dataset.i)]) {
+        const c = cardList[Number(b.dataset.i)];
+        finish({ cardId: c.id, company: c.company || '', department: c.department || '', name: c.name || '' });
+        return;
+      }
+      const t = treeTarget(tree, e);
+      if (t) finish({ cardId: t.person.id, company: t.company, department: t.department, name: t.person.name || '' });
+    };
+    let timer = 0;
+    const later = () => { clearTimeout(timer); timer = setTimeout(run, 300); };
+    searchForm.elements.company.addEventListener('input', later);
+    searchForm.elements.name.addEventListener('input', later);
+    searchForm.addEventListener('submit', (ev) => { ev.preventDefault(); clearTimeout(timer); run(); });
+    run();
 
     m.el.querySelector('[data-f=manual]').addEventListener('submit', (ev) => {
       ev.preventDefault();

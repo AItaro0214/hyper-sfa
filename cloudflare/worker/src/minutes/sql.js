@@ -91,6 +91,11 @@ export function buildListQuery(p) {
     cpConds.push("c.name_n LIKE ? ESCAPE '\\'");
     cpParams.push(`%${escapeLike(normalize(t))}%`);
   }
+  // 部署名は空白を除いた形で持っている（議事録側の company_n と違い、語の途中の空白の違いを吸収する）
+  for (const t of splitTerms(p.department)) {
+    cpConds.push("c.department_n LIKE ? ESCAPE '\\'");
+    cpParams.push(`%${escapeLike(normalize(t).replace(/ /g, ''))}%`);
+  }
   if (p.cardId) {
     cpConds.push('c.card_id = ?');
     cpParams.push(p.cardId);

@@ -89,3 +89,10 @@ test('attendee と owner と limit', () => {
   assert.equal(buildListQuery({ userId: 'u' }).limit, 50);
   assert.equal(count(q.sql), q.params.length);
 });
+
+test('department は同じ相手の行に対する AND で、空白を除いて部分一致', () => {
+  const q = buildListQuery({ userId: 'u1', company: 'アシスト', department: '営業 部', normalize: (s) => s.toUpperCase() });
+  assert.equal(count(q.sql, 'FROM minute_counterparts'), 1);
+  assert.match(q.sql, /c\.department_n LIKE \? ESCAPE '\\'/);
+  assert.ok(q.params.includes('%営業%') && q.params.includes('%部%'));
+});

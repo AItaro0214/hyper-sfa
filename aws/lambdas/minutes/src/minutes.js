@@ -11,7 +11,7 @@ import {
   buildResponsesRequest, parseResponsesResponse,
 } from '@hyper-sfa/core';
 import { runPool } from './pool.js';
-import { ffmpegPath, splitAudio, concatToM4a } from './ffmpeg.js';
+import { ffmpegPath, splitAudio, planSplit, concatToM4a } from './ffmpeg.js';
 
 const FETCH_TIMEOUT_MS = 60_000;
 const CONCURRENCY = 4;
@@ -225,30 +225,32 @@ async function transcribeSegment(ctx, { seg, cfg, apiKey, vars, acc }) {
   const buf = await deps.s3.getObjectBuffer({ bucket: deps.env.AUDIO_BUCKET, key: seg.key });
   const mime = seg.mime || 'audio/webm';
   const maxSec = cfg.model.maxAudioMinutes ? cfg.model.maxAudioMinutes * 60 : 0;
-  const durationSec = seg.durationSec ?? 0;
+  const plan = planSplit({ size: buf.length, durationSec: seg.durationSec ?? 0, maxSec });
 
-  if (!(maxSec && durationSec > maxSec)) {
+  if (!plan) {
     return transcribeOne(deps, { cfg, apiKey, buf, mime, vars, acc });
   }
 
-  // モデルが 1 回に受け付ける長さより長いので、ffmpeg で短く分ける
+  // モデルの上限（長さ）か 20MB を超えるので、ffmpeg で短く分ける
   const ffmpeg = ffmpegPath(deps.env);
   if (!(await deps.io.exists(ffmpeg))) throw new MinutesError('not_configured', { message: '区切りが長すぎます' });
   const dir = await deps.io.mkdtemp();
   ctx.tmpDirs.push(dir);
   const inFile = `${dir}/in.${extOf(seg.key, mime)}`;
   await deps.io.writeFile(inFile, buf);
+  const splitSec = plan.splitSec;
   let files;
+  let partMime;
   try {
-    files = await splitAudio(deps.io, ffmpeg, dir, inFile, maxSec);
+    ({ files, mime: partMime } = await splitAudio(deps.io, ffmpeg, dir, inFile, splitSec, mime));
   } catch {
     throw new MinutesError('not_configured', { message: '区切りが長すぎます' });
   }
   const out = [];
   for (let i = 0; i < files.length; i++) {
     const partBuf = await deps.io.readFile(files[i]);
-    const text = await transcribeOne(deps, { cfg, apiKey, buf: partBuf, mime: 'audio/mp3', vars, acc });
-    out.push(offsetTimestamps(text, i * maxSec));
+    const text = await transcribeOne(deps, { cfg, apiKey, buf: partBuf, mime: partMime, vars, acc });
+    out.push(offsetTimestamps(text, i * splitSec));
   }
   return out.join('\n');
 }

@@ -31,6 +31,13 @@ const card = (i, o = {}) => ({
   editCount: 1, scanCount: 1, version: 1, failure: null, ...o,
 });
 const CARDS = Array.from({ length: 75 }, (_, i) => card(i + 1));
+// 取引先の確認用: 同じ会社で部署違い、表記ゆれ（（株）の位置違い）
+CARDS.push(
+  card(76, { company: '株式会社サンプル1', department: '開発部', title: '部長', name: '鈴木 一郎' }),
+  card(77, { company: '株式会社サンプル1', department: '開発部', title: '主任', name: '高橋 二郎' }),
+  card(78, { company: '株式会社サンプル1', department: '総務部', title: '課長', name: '伊藤 三郎' }),
+  card(79, { company: 'サンプル1（株）', department: '営業部', title: '係長', name: '渡辺 四郎' }),
+);
 const scans = new Map();
 let loggedIn = false;
 let devSettings = { keys: { gemini: { configured: true, last4: 'ab12', updatedAt: new Date().toISOString() }, openai: { configured: false } }, models: { card: 'gemini-3.5-flash-lite', transcribe: 'gemini-3.5-flash-lite', summarize: 'gemini-3.6-flash', qa: 'gemini-3.6-flash' }, prompts: {} };
@@ -51,6 +58,29 @@ function cardView(c) {
   const s = scans.get(c.id);
   if (s && c.status === 'processing' && Date.now() - s > 2500) c.status = 'review';
   return c;
+}
+// 表記ゆれを吸収する簡易版（本物は core の companyKey）
+const companyKey = (s) => norm(s).replace(/株式会社|有限会社|\(株\)|（株）|\s|　/g, '');
+function groupCompanies(q, limit) {
+  const key = companyKey(q);
+  const by = new Map();
+  for (const c of CARDS) {
+    if (c.status !== 'confirmed' || !c.company) continue;
+    const k = companyKey(c.company);
+    if (key && !k.includes(key)) continue;
+    if (!by.has(k)) by.set(k, { key: k, cards: [] });
+    by.get(k).cards.push(c);
+  }
+  const jp = (a, b) => String(a).localeCompare(String(b), 'ja');
+  return [...by.values()].map(({ key: k, cards }) => {
+    const freq = new Map();
+    cards.forEach((c) => freq.set(c.company, (freq.get(c.company) || 0) + 1));
+    const company = [...freq.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    const deps = new Map();
+    cards.forEach((c) => { const n = c.department || ''; if (!deps.has(n)) deps.set(n, []); deps.get(n).push({ id: c.id, name: c.name, title: c.title }); });
+    const departments = [...deps.entries()].sort((a, b) => jp(a[0], b[0])).map(([name, people]) => ({ name, count: people.length, people: people.sort((a, b) => jp(a.name, b.name)) }));
+    return { company, key: k, count: cards.length, departments };
+  }).sort((a, b) => b.count - a.count).slice(0, limit);
 }
 const norm = (s) => String(s || '').normalize('NFKC').toLowerCase();
 
@@ -125,6 +155,7 @@ async function api(req, res, url) {
     scans.set(id, Date.now());
     return send(res, 202, { id, status: 'processing' });
   }
+  if (p === '/api/companies' && m === 'GET') return send(res, 200, { items: groupCompanies(q.get('q') || '', Math.min(Number(q.get('limit') || 20), 100)) });
   if (p === '/api/cards' && m === 'GET') {
     let items = CARDS.filter((c) => c.status !== 'failed');
     const has = (field, qv) => norm(qv).split(/\s+/).filter(Boolean).every((w) => norm(field).includes(w));
@@ -159,12 +190,22 @@ async function api(req, res, url) {
   // ---- 議事録と資料（メモリ上。PUT は受けるだけ） ----
   // 録音の画面の確認用: 作成と区切りのアップロードを受けるだけ
   if (p === '/api/minutes' && m === 'POST') return send(res, 200, { id: 'rec1', segmentSec: 600 });
+  // 音声ファイルのアップロード: 送り先を返すだけ（本文は /dev/upload-sink が読み捨てる）
+  if (p === '/api/minutes/rec1/upload' && m === 'POST') {
+    if (body.size > 600 * 1024 * 1024) return err(res, 400, 'validation', '600MB までです');
+    return send(res, 200, { key: 'mock/upload/rec1', url: '/dev/upload-sink', method: 'PUT', headers: body.mime ? { 'Content-Type': body.mime } : {} });
+  }
   if ((g = p.match(/^\/api\/minutes\/rec1(\/.*)?$/))) {
     if (/^\/segments$/.test(g[1] || '') && m === 'POST') return send(res, 200, { url: `/mock-upload/seg${body.seq}`, headers: {} });
     return send(res, 200, {});
   }
   if (m === 'PUT' && p.startsWith('/mock-upload/')) return send(res, 200, {});
-  if (p === '/api/minutes' && m === 'GET') return send(res, 200, { items: [minuteView()], nextCursor: null });
+  if (p === '/api/minutes' && m === 'GET') {
+    const mv = minuteView();
+    // department は相手の部署（見本は部署なしなので、指定されたら「営業部」だけ一致させる）
+    if (q.get('department') && q.get('department') !== '営業部') return send(res, 200, { items: [], nextCursor: null });
+    return send(res, 200, { items: [mv], nextCursor: null });
+  }
   if ((g = p.match(/^\/api\/minutes\/m1(\/.*)?$/))) {
     const sub = g[1] || '';
     let h;
@@ -295,6 +336,7 @@ http.createServer(async (req, res) => {
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     // 画面の確認用: ログイン済みにして / へ送る。?user=admin 以外は無い（ヘッドレスの撮影用）
     if (url.pathname === '/dev/login-as') { loggedIn = true; res.writeHead(302, { 'Set-Cookie': 'sid=mock; Path=/; HttpOnly', Location: url.searchParams.get('to') || '/' }); return res.end(); }
+    if (url.pathname === '/dev/upload-sink') { req.resume(); return req.on('end', () => setTimeout(() => { res.writeHead(200); res.end(); }, 1500)); }
     if (url.pathname.startsWith('/mock-upload/')) { req.resume(); return req.on('end', () => { res.writeHead(200); res.end(); }); }
     if (url.pathname === '/mock-export.csv') { res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8' }); return res.end('﻿id,name\r\nc1,田中\r\n'); }
     if (url.pathname.startsWith('/mock-img/')) { res.writeHead(200, { 'Content-Type': 'image/svg+xml' }); return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2b2b33"/><stop offset="1" stop-color="#4a2a3c"/></linearGradient></defs><rect width="320" height="200" fill="url(#g)"/><rect x="20" y="20" width="36" height="4" fill="#ff2d8f"/><text x="20" y="60" font-size="16" fill="#f5f5f7" font-family="sans-serif">株式会社サンプル</text><text x="20" y="110" font-size="24" font-weight="700" fill="#fff" font-family="sans-serif">田中 太郎</text><text x="20" y="150" font-size="12" fill="#cfcfd6" font-family="monospace">03-1234-5678</text><text x="20" y="170" font-size="12" fill="#cfcfd6" font-family="monospace">taro@example.co.jp</text></svg>'); }

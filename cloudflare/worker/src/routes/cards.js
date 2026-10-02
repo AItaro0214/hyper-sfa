@@ -1,6 +1,6 @@
 // 画像のアップロード、名刺の読み取り・検索・編集・削除（docs/api-contract.md §4）。
 // 全員がすべての名刺を見られる（部署の仕組みは持たない）。
-import { parseQuery, searchKeys, ulid } from '../core.js';
+import { companyKey, groupByCompany, normalizeText, parseQuery, searchKeys, ulid } from '../core.js';
 import {
   classifyDuplicates,
   diffCards,
@@ -11,7 +11,7 @@ import {
 } from '../lib/cards.js';
 import { ApiError, conflict, notFound, rateLimited } from '../lib/errors.js';
 import { envNumber } from '../lib/http.js';
-import { buildCardSearch, clampLimit } from '../lib/search.js';
+import { buildCardSearch, clampLimit, escapeLike } from '../lib/search.js';
 import { signedPath, verifySignedPath } from '../lib/sign.js';
 import { jstDay, jstDayStart, jstNextDayStart, nowIso, safeJson } from '../lib/time.js';
 import { audit } from '../lib/usage.js';
@@ -187,6 +187,35 @@ export function cardRoutes(app) {
   });
 
   // ---- 検索 ----
+  // 取引先（会社 → 部署 → 人）。確認済みだけを読んで core の groupByCompany にまとめさせる。
+  // 名刺は数千件まで。CPU 10ms に収めるため、q があるときは D1 側で先に絞る。
+  // LIKE は表記ゆれを吸収しないので、元の q・正規化した q・法人格を除いた key の 3 通りを OR にして取りこぼしを防ぎ、
+  // 最終的な絞り込みは groupByCompany（companyKey）が行う
+  app.get('/api/companies', async (c) => {
+    const q = (c.req.query('q') ?? '').trim();
+    const where = ["status = 'confirmed'", 'deleted_at IS NULL', "company != ''"];
+    const params = [];
+    if (q) {
+      const likes = [];
+      for (const [col, v] of [['company', q], ['company', normalizeText(q)], ['company_n', companyKey(q)]]) {
+        if (!v) continue;
+        likes.push(`${col} LIKE ? ESCAPE '\\'`);
+        params.push(`%${escapeLike(v)}%`);
+      }
+      if (likes.length) where.push(`(${likes.join(' OR ')})`);
+    }
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, company, department, name, title FROM cards WHERE ${where.join(' AND ')}`,
+    )
+      .bind(...params)
+      .all();
+    const items = groupByCompany(
+      (results ?? []).map((r) => ({ ...r, status: 'confirmed' })),
+      { q, limit: c.req.query('limit') },
+    );
+    return c.json({ items });
+  });
+
   app.get('/api/cards', async (c) => {
     const user = c.get('user');
     const q = c.req.query();

@@ -125,6 +125,7 @@
 | `POST /api/cards/{id}/rescan` | 再生成。`{ "status": "processing" }` 202 |
 | `GET /api/cards` | 検索。`company` `name` `department` `phone` `email` `note`（備考と役職の両方に当てる） `owner`（利用者 ID）`from` `to`（登録日、`YYYY-MM-DD`）`status` `dept`（担当部署 ID）`cursor` `limit`。応答 `{ "items", "nextCursor", "total" }`。`items` は `rawText` 抜き |
 | `GET /api/cards/{id}` | 詳細 |
+| `GET /api/companies` | 取引先（会社 → 部署 → 人）の集計。見える範囲の名刺（確認済みのみ、削除済みを除く）から作る。`q`（会社名の部分一致。表記ゆれは `companyKey` で吸収）`limit`（会社の数。既定 20、最大 100）。応答 `{ "items": [{ "company", "key", "count", "departments": [{ "name", "count", "people": [{ "id", "name", "title" }] }] }] }`。`company` は名刺に多く書かれている表記、`key` は `companyKey` の値。部署名が空の名刺は `name: ""` の部署にまとめる。会社は `count` の多い順、部署は名前順、人は名前順。会社名が空の名刺は含めない。**AWS 版は `title` を返さない**（検索用の索引 gsi1 が INCLUDE の上限 20 属性を使い切っていて役職を載せられないため。人は `{ id, name }`）。Cloudflare 版は `title` を返す |
 | `PUT /api/cards/{id}` | `{ company, department, title, name, nameReading, phones, mobiles, emails, note, deptIds, version, source: "review" | "search" | "detail", confirm: true }`。`confirm: true` で `review` → `confirmed`。`version` 不一致は 409 |
 | `DELETE /api/cards/{id}` | 論理削除。開発者（Cloudflare 版は `admin`）だけ。登録の途中（`status` が `confirmed` でない）の自分の下書きは本人も可。それ以外は 403 `forbidden` |
 | `POST /api/cards/{id}/images/replace` | 画像を縮小して置き換えるための PUT 先。`{ "uploads": [{ "kind": "front" / "back", "url", "method": "PUT", "headers" }] }`。**既存のキーに上書きする。** 編集できる人だけ。15 分有効 |
@@ -184,7 +185,7 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 
 ```json
 {
-  "id": "...", "title": "株式会社アシスト 定例", "heldAt": "...", "mode": "web" | "room",
+  "id": "...", "title": "株式会社アシスト 定例", "heldAt": "...", "mode": "web" | "room" | "upload",
   "durationSec": 4320, "memo": "...",
   "status": "recording" | "uploaded" | "queued" | "transcribing" | "summarizing" | "done" | "failed",
   "progress": { "segmentsDone": 3, "segmentsTotal": 12 },
@@ -204,15 +205,16 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 
 | メソッドとパス | 内容 |
 | --- | --- |
-| `POST /api/minutes` | `{ "mode", "title"?, "segmentSec"? }` → `{ "id", "segmentSec": 600, "audioMime": "audio/webm" }`。`segmentSec` はサーバーが選択中のモデルに合わせて返す |
+| `POST /api/minutes` | `{ "mode", "title"?, "segmentSec"? }` → `{ "id", "segmentSec": 600, "audioMime": "audio/webm" }`。`mode` は `web` `room` `upload`（`upload` のとき `audioMime` は `null`）。`segmentSec` はサーバーが選択中のモデルに合わせて返す |
 | `POST /api/minutes/{id}/segments` | `{ "seq": 1, "mime": "audio/webm", "startSec": 0, "durationSec": 600, "size": 2400000 }` → `{ "key", "url", "method": "PUT", "headers" }`。画面は `url` へ PUT し、続けて `PUT /api/minutes/{id}/segments/{seq}/done` を呼ぶ |
 | `POST /api/minutes/{id}/full-audio` | Cloudflare 版だけ。通しの 1 本のアップロード先。本文 `{ "mime", "durationSec", "size" }`。応答は segments と同じ。画面は `/finish` の後に送る |
+| `POST /api/minutes/{id}/upload` | `mode: upload` だけ。音声ファイル 1 本のアップロード先。本文 `{ "mime", "durationSec", "size", "filename" }`（`mime` は `audio/mp4` `audio/mpeg` `audio/wav` `audio/x-wav` `audio/webm` `audio/ogg` `audio/aac` `audio/x-m4a` `video/mp4` `video/webm`、`size` は 600MB まで、`durationSec` は 7,200 まで。長さが読めなかった画面は 0 を送り、サーバーは大きさから概算する）→ `{ "key", "url", "method": "PUT", "headers" }`。1 つの区切り（`seq: 1`）として登録される（`mode` が `upload` でない、または `status` が `recording` でないと 409 `conflict`、再度呼ぶと `seq: 1` を上書きする）。`url` の有効期限は 1 時間。**Cloudflare 版は `size` が 100MB まで、`durationSec` が 3,600 まで**で、`url` は Worker の `PUT /api/minutes/{id}/upload/put`（本文をそのまま R2 へ）。画面は `url` へ PUT し、`PUT /api/minutes/{id}/segments/1/done` → `POST /api/minutes/{id}/finish`（`segments: 1`）の順に呼ぶ（`finish` の `durationSec` は 0 でもよく、サーバーは区切りの長さを使う）。以後は録音と同じ |
 | `POST /api/minutes/{id}/finish` | `{ "durationSec", "segments": 12 }`。`recording` → `uploaded` |
 | `PUT /api/minutes/{id}` | `{ title, memo, counterparts: [{ cardId?, company?, name?, department? }], attendeeIds }`。作った人だけ |
 | `POST /api/minutes/{id}/generate` | 作成を始める。失敗した所からのやり直しも同じ。202 |
 | `POST /api/minutes/{id}/regenerate` | `{ "target": "summary" | "transcript" }`。`transcript` は音声が残っている間だけ。202 |
 | `POST /api/minutes/{id}/revert` | `{ "target": "summary" | "transcript" }`。前の版に戻す |
-| `GET /api/minutes` | `relation`（`owner` `shared` `all`）`company` `name` `cardId` `attendee` `from` `to` `title` `owner` `cursor` |
+| `GET /api/minutes` | `relation`（`owner` `shared` `all`）`company` `department`（相手の部署名の部分一致。名刺から選んだ相手も手入力の相手も対象）`name` `cardId` `attendee` `from` `to` `title` `owner` `cursor` |
 | `GET /api/minutes/{id}` | 上の形 |
 | `GET /api/minutes/{id}/transcript` | `{ "text", "version" }` |
 | `GET /api/minutes/{id}/summary` | `{ "markdown", "version" }` |

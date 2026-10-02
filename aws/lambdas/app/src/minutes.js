@@ -13,6 +13,15 @@ const AUDIO_KEEP_DAYS = 7;
 const MAX_SEGMENT_BYTES = 10 * 1024 * 1024;
 const MAX_RECORDING_SEC = 7200;
 const MAX_SHARE = 50;
+// 音声ファイルのアップロード（mode: upload）。1 本をそのまま 1 つの区切りとして置く。
+// 10 分 / 20MB を超える分割は minutes Lambda が ffmpeg で行う
+const UPLOAD_MAX_BYTES = 600 * 1024 * 1024;
+const UPLOAD_MIMES = {
+  'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
+  'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/aac': 'aac', 'video/mp4': 'mp4', 'video/webm': 'webm',
+};
+// 長さが読めないファイルの概算。8000 バイト/秒（約 64kbps）で割る
+const estimateSec = (size) => Math.max(1, Math.min(MAX_RECORDING_SEC, Math.round(size / 8000)));
 const SEGMENT_MIMES = { 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/ogg': 'ogg' };
 const nowIso = () => new Date().toISOString();
 
@@ -186,6 +195,7 @@ function matchesCopy(cp, q) {
   const cps = cp.counterparts ?? [];
   if (q.relation && q.relation !== 'all' && cp.relation !== q.relation) return false;
   if (q.company && !allIn(terms(q.company).map((w) => w.replace(/ /g, '')), cps.map((x) => compact(x.company)))) return false;
+  if (q.department && !allIn(terms(q.department).map((w) => w.replace(/ /g, '')), cps.map((x) => compact(x.department)))) return false;
   if (q.name && !allIn(terms(q.name).map((w) => w.replace(/ /g, '')), cps.map((x) => compact(x.name)))) return false;
   if (q.cardId && !cps.some((x) => x.cardId === q.cardId)) return false;
   if (q.attendee) {
@@ -314,7 +324,7 @@ export function registerMinutesRoutes(app) {
   app.post('/api/minutes', async (c) => {
     const user = me(c);
     const body = await readJson(c);
-    if (body.mode !== 'web' && body.mode !== 'room') throw validation('mode が正しくありません', [{ field: 'mode', message: 'web か room を指定してください' }]);
+    if (body.mode !== 'web' && body.mode !== 'room' && body.mode !== 'upload') throw validation('mode が正しくありません', [{ field: 'mode', message: 'web、room、upload のどれかを指定してください' }]);
     const errors = [];
     const title = cleanStr(body.title, 200, 'title', errors) ?? '';
     if (errors.length) throw validation('入力を確かめてください', errors);
@@ -344,7 +354,7 @@ export function registerMinutesRoutes(app) {
     };
     await ddb.put(meta, { condition: 'attribute_not_exists(pk)' });
     await ddb.put(copyOf(meta, 'owner', user.id));
-    return c.json({ id, segmentSec, audioMime: 'audio/webm' });
+    return c.json({ id, segmentSec, audioMime: body.mode === 'upload' ? null : 'audio/webm' });
   });
 
   app.post('/api/minutes/:id/segments', async (c) => {
@@ -371,6 +381,34 @@ export function registerMinutesRoutes(app) {
     return c.json({ key, url, method: 'PUT', headers: { 'Content-Type': mime } });
   });
 
+  app.post('/api/minutes/:id/upload', async (c) => {
+    const user = me(c);
+    const meta = await ownerAccess(user, c.req.param('id'));
+    if (meta.mode !== 'upload') throw conflict('音声ファイルのアップロード用の議事録ではありません');
+    if (meta.status !== 'recording') throw conflict('アップロードはすでに終わっています');
+    const b = await readJson(c);
+    const mime = String(b.mime ?? '').split(';')[0].trim().toLowerCase();
+    const errors = [];
+    if (!UPLOAD_MIMES[mime]) errors.push({ field: 'mime', message: '対応していない音声の形式です' });
+    if (!Number.isInteger(b.size) || b.size < 1 || b.size > UPLOAD_MAX_BYTES) errors.push({ field: 'size', message: 'ファイルは 600MB までです' });
+    const dur = b.durationSec ?? 0;
+    if (typeof dur !== 'number' || !(dur >= 0) || dur > MAX_RECORDING_SEC) errors.push({ field: 'durationSec', message: '長さは 2 時間までです' });
+    const filename = b.filename === undefined || b.filename === null ? '' : String(b.filename);
+    if (filename.length > 200) errors.push({ field: 'filename', message: 'ファイル名は 200 字までです' });
+    if (errors.length) throw validation('入力を確かめてください', errors);
+
+    const estimated = !(dur > 0);
+    const key = `minutes/${meta.id}/seg-001.${UPLOAD_MIMES[mime]}`;
+    // やり直しのときは同じ seq: 1 を上書きする
+    await ddb.put({
+      ...K.minuteSeg(meta.id, 1),
+      seq: 1, key, mime, startSec: 0, durationSec: estimated ? estimateSec(b.size) : dur, size: b.size, state: 'pending',
+      filename, ...(estimated ? { durationEstimated: true } : {}),
+    });
+    const url = await s3.presignPut({ bucket: 'audio', key, contentType: mime, expiresSec: 3600 });
+    return c.json({ key, url, method: 'PUT', headers: { 'Content-Type': mime } });
+  });
+
   app.put('/api/minutes/:id/segments/:seq/done', async (c) => {
     const user = me(c);
     const meta = await ownerAccess(user, c.req.param('id'));
@@ -380,8 +418,12 @@ export function registerMinutesRoutes(app) {
     const seg = await ddb.get(k.pk, k.sk);
     if (!seg) throw notFound('区切りが見つかりません');
     const head = await s3.headObject({ bucket: 'audio', key: seg.key });
-    if (!head || head.size > MAX_SEGMENT_BYTES) throw validation('アップロードが完了していません');
-    await ddb.update(k.pk, k.sk, { set: { state: 'uploaded', size: head.size, uploadedAt: nowIso() } });
+    const maxBytes = meta.mode === 'upload' ? UPLOAD_MAX_BYTES : MAX_SEGMENT_BYTES;
+    if (!head || head.size > maxBytes) throw validation('アップロードが完了していません');
+    const set = { state: 'uploaded', size: head.size, uploadedAt: nowIso() };
+    // 長さが分からなかったファイルは、置かれた大きさから概算し直す
+    if (seg.durationEstimated) set.durationSec = estimateSec(head.size);
+    await ddb.update(k.pk, k.sk, { set });
     return c.json({ ok: true });
   });
 
@@ -390,17 +432,22 @@ export function registerMinutesRoutes(app) {
     const meta = await ownerAccess(user, c.req.param('id'));
     const b = await readJson(c);
     if (meta.status !== 'recording') throw conflict('録音はすでに終わっています');
-    if (!(b.durationSec > 0) || b.durationSec > MAX_RECORDING_SEC + 60 || !Number.isInteger(b.segments) || b.segments < 1) {
+    const isUpload = meta.mode === 'upload';
+    // upload は長さが 0 のまま来ることがある（区切りの長さを採用するため）
+    if ((!isUpload && !(b.durationSec > 0)) || !(b.durationSec >= 0) || b.durationSec > MAX_RECORDING_SEC + 60 || !Number.isInteger(b.segments) || b.segments < 1) {
       throw validation('入力を確かめてください', [{ field: 'durationSec', message: '録音の長さと区切りの数が必要です' }]);
     }
     const segs = await ddb.queryAll({ pk: meta.pk, skPrefix: 'SEG#' });
     if (segs.filter((s) => s.state === 'uploaded').length < b.segments) {
       throw validation('アップロードが終わっていない区切りがあります');
     }
+    const durationSec = isUpload
+      ? Math.round(segs.filter((s) => s.state === 'uploaded').reduce((a, s) => a + (s.durationSec ?? 0), 0))
+      : Math.round(b.durationSec);
     const at = nowIso();
     const updated = await setMeta(meta, {
       status: 'uploaded',
-      durationSec: Math.min(Math.round(b.durationSec), MAX_RECORDING_SEC),
+      durationSec: Math.min(durationSec, MAX_RECORDING_SEC),
       segmentCount: segs.length,
       progress: { segmentsDone: 0, segmentsTotal: segs.length },
       finishedAt: at,

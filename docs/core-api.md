@@ -180,3 +180,13 @@ Gemini は既存の `buildGenerateRequest` に `parts: [{ fileData: { mimeType: 
 - `gemini.js`: `buildChatGenerateRequest({ model, apiKey, systemText, turns: [{ role: 'user' | 'assistant', text }], thinkingLevel, maxOutputTokens })` → `systemInstruction` と `contents`（`role` は `user` / `model`）。応答は既存の `parseGenerateResponse`。
 - `openai.js`: `buildResponsesRequest` に `turns`（`[{ role, text }]`）を渡せるようにする（`input` が `[{ role: 'user' | 'assistant', content: [{ type: 'input_text' | 'output_text', text }] }]` の列になる）。
 - `qa.js`: `buildQaContext({ transcript, materials, minute })` → `{ TITLE, DATE, COUNTERPARTS, ATTENDEES, MEMO, MATERIALS, TRANSCRIPT }`（`formatMaterialsForPrompt` を使う）。`trimTurns(turns, max = 20)`。
+
+## 16. `company.js` — 取引先の表記ゆれと集計
+
+| 関数 | 内容 |
+| --- | --- |
+| `companyKey(name)` | 会社名を突き合わせ用に正規化する。NFKC → 小文字 → 空白と記号を除く → 法人格（株式会社、(株)、㈱、有限会社、合同会社、一般社団法人 など）と前後の「・」を除く。空文字なら `''` |
+| `similarCompanies(name, companies, { limit = 5 } = {})` | `companies` は `[{ company, key, ... }]`。`name` の `companyKey` と、完全一致 → 片方がもう片方を含む → バイグラムの Dice 係数 0.6 以上、の順で近いものを返す。`name` と表記まで同じものは除く（「似ている別表記」を出すため） |
+| `groupByCompany(cards, { q, limit })` | 名刺の配列（`company` `department` `name` `title` `id` `status` `deletedAt`）を `GET /api/companies` の応答の形にまとめる。両バックエンドと mock が同じ関数を使う。AWS 版は応答から `title` を削って返す（api-contract.md） |
+
+`companyKey` は `search.js` の `normalizeText` を元にする。検索の `companyN` とは別物で、こちらは法人格を落とす（「株式会社アシスト」と「アシスト（株）」を同じ取引先と見なすため）。

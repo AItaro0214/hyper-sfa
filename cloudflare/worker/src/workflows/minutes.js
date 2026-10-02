@@ -6,6 +6,7 @@ import {
   offsetTimestamps,
   joinSegments,
   estimateCost,
+  DEFAULT_SELECTION,
   usageEvent,
   buildGenerateRequest,
   parseGenerateResponse,
@@ -36,6 +37,7 @@ import { recordUsage } from '../lib/usage.js';
 import { runMinutesPipeline } from '../minutes/pipeline.js';
 
 const deps = {
+  DEFAULT_SELECTION,
   renderPrompt,
   offsetTimestamps,
   joinSegments,

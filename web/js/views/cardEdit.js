@@ -6,6 +6,7 @@ import { optimizeCardImages } from '../imageUtil.js';
 import { state } from '../state.js';
 import { esc, el, openModal, toast } from '../ui.js';
 import { icon } from '../icons.js';
+import { mountCompanySuggest } from '../companyPicker.js';
 
 export const STATUS_LABEL = { processing: '読み取り中', review: '確認待ち', failed: '失敗', confirmed: '確認済み' };
 
@@ -53,6 +54,7 @@ export async function mountCardForm(container, opts) {
       <div class="photos">${photoHtml(card)}</div>
       <div class="fields">
         <label class="field"><span>会社名</span><input name="company" value="${esc(card.company)}" autocomplete="off"></label>
+        <p class="cs-similar" data-similar hidden></p>
         <label class="field"><span>部署名</span><input name="department" value="${esc(card.department)}" autocomplete="off"></label>
         <label class="field"><span>役職</span><input name="title" value="${esc(card.title)}" autocomplete="off"></label>
         <label class="field"><span>氏名</span><input name="name" value="${esc(card.name)}" autocomplete="off"></label>
@@ -89,6 +91,27 @@ export async function mountCardForm(container, opts) {
   };
   emailsEl.addEventListener('input', checkEmails);
   checkEmails();
+
+  // 会社名: 既存の取引先の候補を出して、表記を揃えやすくする。選ばなくても保存できる。
+  const companyEl = form.elements.company;
+  const similarEl = form.querySelector('[data-similar]');
+  const showSimilar = (items, q) => {
+    // 入れた表記と同じものは出さない。違う表記の 1 つ目だけを「似ている」として出す
+    const alt = q ? items.find((c) => c.company !== q) : null;
+    if (!alt || items.some((c) => c.company === q)) { similarEl.hidden = true; similarEl.replaceChildren(); return; }
+    similarEl.replaceChildren('似た取引先があります: ');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = `${alt.company}（${alt.count} 枚）`;
+    b.addEventListener('click', () => { companyEl.value = alt.company; similarEl.hidden = true; });
+    similarEl.append(b);
+    similarEl.hidden = false;
+  };
+  mountCompanySuggest(companyEl, {
+    heading: '既存の取引先',
+    onPick: ({ company }) => { companyEl.value = company; similarEl.hidden = true; },
+    onResults: showSimilar,
+  });
 
   const deptBox = form.querySelector('[data-depts]');
   function renderDepts() {

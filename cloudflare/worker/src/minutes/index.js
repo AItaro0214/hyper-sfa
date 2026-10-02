@@ -15,6 +15,14 @@ const AUDIO_KEEP_MS = 7 * 24 * 3600 * 1000;
 const SEGMENT_MAX_BYTES = 10 * 1024 * 1024; // 契約 §9
 const FULL_AUDIO_MAX_BYTES = 100 * 1024 * 1024;
 const UPLOAD_URL_TTL_SEC = 15 * 60;
+// 音声ファイルのアップロード（mode: upload）。1 本のまま Gemini の Files API で 1 回で起こすので、AWS 版（600MB・2 時間）より小さい
+const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
+const UPLOAD_MAX_SEC = 3600;
+const UPLOAD_MIMES = new Set([
+  'audio/mp4', 'audio/x-m4a', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/webm', 'audio/ogg', 'audio/aac', 'video/mp4', 'video/webm',
+]);
+// 100MB のファイルを大きい順に待たせないよう、署名付き URL は録音の区切りより長く持たせる
+const UPLOAD_FILE_URL_TTL_SEC = 60 * 60;
 // 再生中のシーク（Range）で URL が切れないよう、契約の「5 分」より長くしている。R2 の本文は署名とセッションの両方を確かめてから返す
 const AUDIO_URL_TTL_SEC = 60 * 60;
 const TEST_KEEP_MS = 24 * 3600 * 1000;
@@ -33,6 +41,7 @@ async function readBody(c) {
 function extOf(mime) {
   const m = String(mime || '').split(';')[0].trim().toLowerCase();
   if (m === 'audio/webm' || m === 'video/webm') return 'webm';
+  if (m === 'video/mp4') return 'mp4';
   if (m === 'audio/mp4' || m === 'audio/m4a' || m === 'audio/x-m4a' || m === 'audio/aac') return 'm4a';
   if (m === 'audio/ogg') return 'ogg';
   if (m === 'audio/mpeg') return 'mp3';
@@ -59,6 +68,7 @@ async function listMinutes(c, extra = {}) {
     userId: user.id,
     relation: q.relation,
     company: q.company,
+    department: q.department,
     name: q.name,
     cardId: q.cardId,
     attendee: q.attendee,
@@ -155,8 +165,8 @@ export function minutesRoutes(app) {
   app.post('/api/minutes', async (c) => {
     const user = c.get('user');
     const body = await readBody(c);
-    const mode = body.mode === 'room' ? 'room' : body.mode === 'web' ? 'web' : null;
-    if (!mode) throw validationError('mode は web か room です', [{ field: 'mode', message: 'web か room を指定してください' }]);
+    const mode = ['web', 'room', 'upload'].includes(body.mode) ? body.mode : null;
+    if (!mode) throw validationError('mode は web・room・upload のどれかです', [{ field: 'mode', message: 'web、room、upload のどれかを指定してください' }]);
     const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim().slice(0, 200) : '無題の議事録';
     // 選択中の文字起こしモデルが 1 回に渡せる長さに合わせる（Cloudflare 版は ffmpeg が無く、後から分け直せないため）
     let segmentSec = int(c.env.SEGMENT_SEC, 600) || 600;
@@ -176,7 +186,7 @@ export function minutesRoutes(app) {
       ).bind(id, title, now, mode, user.id, segmentSec, now, now),
       c.env.DB.prepare('INSERT INTO minute_attendees (minute_id, user_id) VALUES (?, ?)').bind(id, user.id),
     ]);
-    return c.json({ id, segmentSec, audioMime: 'audio/webm' });
+    return c.json({ id, segmentSec, audioMime: mode === 'upload' ? null : 'audio/webm' });
   });
 
   app.post('/api/minutes/:id/segments', async (c) => {
@@ -225,6 +235,48 @@ export function minutesRoutes(app) {
     return c.json({ ok: true });
   });
 
+  // 音声ファイル 1 本を seq: 1 の区切りとして置く。本文は Worker で読まず R2 へ流す（full-audio と同じ作り）
+  app.post('/api/minutes/:id/upload', async (c) => {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const { row } = await loadVisible(c.env, id, user.id, { ownerOnly: true });
+    if (row.mode !== 'upload') throw new HttpError(409, 'conflict', '音声ファイルのアップロード用の議事録ではありません');
+    if (row.status !== 'recording') throw new HttpError(409, 'conflict', 'アップロードはすでに終わっています');
+    const b = await readBody(c);
+    const mime = String(b.mime ?? '').split(';')[0].trim().toLowerCase();
+    const size = typeof b.size === 'number' ? Math.trunc(b.size) : 0;
+    const dur = b.durationSec === undefined || b.durationSec === null ? 0 : Number(b.durationSec);
+    const errors = [];
+    if (!UPLOAD_MIMES.has(mime)) errors.push({ field: 'mime', message: '対応していない音声の形式です' });
+    if (size < 1 || size > UPLOAD_MAX_BYTES) errors.push({ field: 'size', message: 'ファイルは 100MB までです' });
+    if (!Number.isFinite(dur) || dur < 0 || dur > UPLOAD_MAX_SEC) errors.push({ field: 'durationSec', message: '長さは 60 分までです' });
+    if (errors.length) throw validationError('60 分・100MB 以内の音声を選んでください', errors);
+    // 長さが読めなかったファイルは、大きさから概算する（8000 バイト/秒）
+    const durationSec = dur > 0 ? Math.round(dur) : Math.max(1, Math.min(UPLOAD_MAX_SEC, Math.round(size / 8000)));
+    const key = `minutes/${id}/seg-1.${extOf(mime)}`;
+    await upsertSegmentRow(c.env, id, 1, key, mime, 0, durationSec, size);
+    await c.env.DB.prepare('UPDATE minutes SET audio_mime = ?, updated_at = ? WHERE id = ?').bind(mime, nowIso(), id).run();
+    const url = await sign(c.env, `/api/minutes/${id}/upload/put`, UPLOAD_FILE_URL_TTL_SEC);
+    return c.json({ key, url, method: 'PUT', headers: { 'Content-Type': mime } });
+  });
+
+  app.put('/api/minutes/:id/upload/put', async (c) => {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    if (!(await verify(c.env, c.req.url))) throw new HttpError(403, 'forbidden', 'アップロードの期限が切れました。もう一度試してください');
+    const { row } = await loadVisible(c.env, id, user.id, { ownerOnly: true });
+    if (row.mode !== 'upload' || row.status !== 'recording') throw new HttpError(409, 'conflict', 'アップロードできない状態です');
+    const seg = await c.env.DB.prepare('SELECT key, mime FROM minute_segments WHERE minute_id = ? AND seq = 1').bind(id).first();
+    if (!seg) throw new HttpError(404, 'not_found', '先にアップロードの登録が必要です');
+    const len = int(c.req.header('content-length'), 0);
+    if (len <= 0) throw validationError('Content-Length が必要です');
+    if (len > UPLOAD_MAX_BYTES) throw validationError('音声が大きすぎます（100MB まで）');
+    await c.env.AUDIO.put(seg.key, c.req.raw.body, { httpMetadata: { contentType: baseMimeOf(seg.mime) } });
+    // 聞き直し・ダウンロードは通しの 1 本と同じ経路で出す
+    await c.env.DB.prepare('UPDATE minutes SET full_audio_key = ?, updated_at = ? WHERE id = ?').bind(seg.key, nowIso(), id).run();
+    return c.json({ ok: true });
+  });
+
   // Cloudflare 版だけ: 録音したままの形式の通しの 1 本（ffmpeg が無いので、ダウンロード用に別に送る）
   app.post('/api/minutes/:id/full-audio', async (c) => {
     const user = c.get('user');
@@ -259,7 +311,11 @@ export function minutesRoutes(app) {
     const { row } = await loadVisible(c.env, id, user.id, { ownerOnly: true });
     if (!['recording', 'uploaded'].includes(row.status)) throw new HttpError(409, 'conflict', 'すでに録音は終わっています');
     const b = await readBody(c);
-    const durationSec = Math.min(Math.max(int(b.durationSec, 0), 0), 7200 + 60);
+    let durationSec = Math.min(Math.max(int(b.durationSec, 0), 0), 7200 + 60);
+    if (row.mode === 'upload') {
+      // 画面が長さを読めなかったとき（0）も通す。区切りに登録した長さ（概算を含む）を使う
+      durationSec = (await c.env.DB.prepare('SELECT duration_sec FROM minute_segments WHERE minute_id = ? AND seq = 1').bind(id).first())?.duration_sec ?? durationSec;
+    }
     const want = int(b.segments, 0);
     const got = (await c.env.DB.prepare('SELECT COUNT(*) AS n FROM minute_segments WHERE minute_id = ? AND uploaded = 1').bind(id).first())?.n ?? 0;
     if (got === 0 || (want > 0 && got < want)) {
@@ -334,8 +390,8 @@ export function minutesRoutes(app) {
       list.forEach((x, i) => {
         stmts.push(
           c.env.DB.prepare(
-            'INSERT INTO minute_counterparts (minute_id, seq, card_id, company, department, name, company_n, name_n) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          ).bind(id, i, x.cardId, x.company, x.department, x.name, normalizeText(x.company), normalizeText(x.name)),
+            'INSERT INTO minute_counterparts (minute_id, seq, card_id, company, department, name, company_n, name_n, department_n) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          ).bind(id, i, x.cardId, x.company, x.department, x.name, normalizeText(x.company), normalizeText(x.name), normalizeText(x.department).replace(/ /g, '')),
         );
       });
     }

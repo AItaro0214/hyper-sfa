@@ -192,3 +192,91 @@ test('資料つきでない議事録の作り直しは資料の印を外し、�
   assert.equal(sm.previousWithMaterials, true);
   assert.equal(sm.previousMappingKey, 'minutes/m1/summary-mapping-v2.json');
 });
+
+// ---- 区切りの分け方（長さ・大きさ・コピー） ----
+
+// 偽の ffmpeg。exec の呼び出しを記録し、onExec が返した名前の部品を出来たことにする
+function splitIo(onExec) {
+  const calls = [];
+  let names = [];
+  return {
+    calls,
+    io: {
+      exists: async () => true,
+      mkdtemp: async () => '/tmp/x',
+      writeFile: async () => {},
+      readFile: async () => Buffer.from('part'),
+      readdir: async () => names,
+      rm: async (p) => { names = names.filter((n) => !p.endsWith(n)); },
+      exec: async (cmd, args) => {
+        calls.push(args);
+        const r = onExec(args, calls.length);
+        if (r instanceof Error) throw r;
+        names = r;
+      },
+    },
+  };
+}
+
+async function runSplit({ mime, durationSec, size, onExec }) {
+  const sio = splitIo(onExec);
+  const ddb = fakeDdb([
+    { pk: 'MIN#m1', sk: 'META', status: 'queued', ownerEmail: 'a@x.jp', title: '定例', heldAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' },
+    { pk: 'MIN#m1', sk: 'SEG#1', seq: 1, key: 'minutes/m1/seg-1.m4a', mime, startSec: 0, durationSec, transcriptStatus: 'pending' },
+  ]);
+  const t = makeDeps({ ddb, fetchImpl: async (u, init) => {
+    const body = JSON.parse(init.body);
+    const inline = (body.contents ?? []).flatMap((c) => c.parts ?? []).find((p) => p.inlineData)?.inlineData;
+    if (inline) t.mimes.push(inline.mimeType);
+    return reply(inline ? '[00:05] 話者A: こんにちは' : '## 要点\n議事録');
+  } });
+  t.mimes = [];
+  t.puts.set('minutes/m1/seg-1.m4a', Buffer.alloc(size));
+  t.deps.io = sio.io;
+  await runMinutes({ minuteId: 'm1', target: 'generate' }, t.deps);
+  return { t, calls: sio.calls };
+}
+
+test('m4a は再エンコードせずコピーで切り、部品の MIME は audio/mp4', async () => {
+  const { t, calls } = await runSplit({
+    mime: 'audio/mp4', durationSec: 1500, size: 1000,
+    onExec: () => ['part-000.m4a', 'part-001.m4a', 'part-002.m4a'],
+  });
+  const a = calls[0];
+  assert.deepEqual(a.slice(a.indexOf('-c:a'), a.indexOf('-c:a') + 2), ['-c:a', 'copy']);
+  assert.ok(a.includes('-vn') && a.includes('ipod') && !a.includes('libmp3lame'));
+  assert.deepEqual(t.mimes, ['audio/mp4', 'audio/mp4', 'audio/mp4']);
+  assert.match(t.puts.get('minutes/m1/transcript-v1.txt').toString(), /\[00:20:05\]/);
+});
+
+test('コピーが失敗したら mp3 への再エンコードに落ちる', async () => {
+  const { t, calls } = await runSplit({
+    mime: 'audio/x-m4a', durationSec: 1500, size: 1000,
+    onExec: (args, n) => (n === 1 ? new Error('ffmpeg exited 1') : ['part-000.mp3', 'part-001.mp3', 'part-002.mp3']),
+  });
+  assert.equal(calls.length >= 2, true);
+  assert.ok(calls[1].includes('libmp3lame'));
+  assert.deepEqual(t.mimes, ['audio/mp3', 'audio/mp3', 'audio/mp3']);
+});
+
+test('20MB を超えるなら、長さが上限内でも分ける', async () => {
+  const { t, calls } = await runSplit({
+    mime: 'audio/mp4', durationSec: 300, size: 21 * 1024 * 1024,
+    onExec: () => ['part-000.m4a', 'part-001.m4a'],
+  });
+  assert.equal(calls.length >= 1, true);
+  const st = calls[0][calls[0].indexOf('-segment_time') + 1];
+  assert.ok(Number(st) < 300); // 大きさから逆算して、上限より短く切る
+  assert.equal(t.mimes.length, 2);
+});
+
+test('durationSec が 0 でも、大きさから 64kbps 相当で概算して分ける', async () => {
+  // 21MB / 8000 = 約 2750 秒 > 600 秒
+  const { t, calls } = await runSplit({
+    mime: 'audio/mp4', durationSec: 0, size: 21 * 1024 * 1024,
+    onExec: () => ['part-000.m4a', 'part-001.m4a'],
+  });
+  assert.equal(calls.length >= 1, true);
+  assert.equal(calls[0][calls[0].indexOf('-segment_time') + 1], '600');
+  assert.equal(t.mimes.length, 2);
+});

@@ -130,6 +130,19 @@ export function createSearchIndex({ ddb, shards = 8, now = () => Date.now() }) {
     };
   }
 
+  /**
+   * 見える範囲の確認済みの名刺（取引先の集計用。docs/api-contract.md の GET /api/companies）。
+   * 範囲の外の名刺を集計に混ぜると、会社名や人の名前から存在が分かってしまうので、search と同じ visible を通す。
+   */
+  async function visibleConfirmed(user) {
+    await ensureFresh();
+    const out = [];
+    for (const e of map.values()) {
+      if (e.item.status === 'confirmed' && visible(user, e)) out.push(e.item);
+    }
+    return out;
+  }
+
   /** 同じメールアドレス、または同じ会社名と氏名の名刺（見える範囲だけ。§9.4）。 */
   async function findDuplicates(user, card, { max = 5 } = {}) {
     await ensureFresh();
@@ -154,5 +167,5 @@ export function createSearchIndex({ ddb, shards = 8, now = () => Date.now() }) {
     apply([item]);
   }
 
-  return { search, findDuplicates, ensureFresh, put, size: () => map.size, _map: map };
+  return { search, visibleConfirmed, findDuplicates, ensureFresh, put, size: () => map.size, _map: map };
 }

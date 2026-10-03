@@ -212,18 +212,51 @@ export async function renderHome(container, _p, query, minutesMod) {
   if (io) io.observe(container.querySelector('[data-sentinel]'));
 
   // 編集パネル
-  function closePanel() { panel.hidden = true; panelBody.replaceChildren(); document.body.classList.remove('panel-open'); }
+  let panelSeq = 0;
+  async function latestCard(id) {
+    const c = await api.get(`/api/cards/${encodeURIComponent(id)}`);
+    if (c.isCurrent === false && c.person && Array.isArray(c.person.cards)) {
+      const cur = c.person.cards.find((x) => x.isCurrent);
+      if (cur && cur.id !== c.id) return api.get(`/api/cards/${encodeURIComponent(cur.id)}`);
+    }
+    return c;
+  }
+  // 行の内容を最新に差し替える。過去の名刺だった行は、同じ位置で今の名刺に置き換える
+  function swapRow(oldId, card) {
+    const i = items.findIndex((x) => x.id === oldId);
+    if (i < 0) return;
+    const dup = items.findIndex((x, j) => j !== i && x.id === card.id);
+    items[i] = card;
+    const old = listEl.querySelector(`[data-id="${CSS.escape(oldId)}"]`);
+    if (old) old.replaceWith(el(rowHtml(card)));
+    if (dup >= 0) { items.splice(dup, 1); listEl.querySelectorAll(`[data-id="${CSS.escape(card.id)}"]`).forEach((n, k) => { if (k > 0) n.remove(); }); }
+  }
+  function closePanel() { panelSeq++; panel.hidden = true; panelBody.replaceChildren(); document.body.classList.remove('panel-open'); }
   panel.querySelector('[data-close]').addEventListener('click', closePanel);
   listEl.addEventListener('click', async (e) => {
     const row = e.target.closest('.row');
     if (!row || e.target.closest('a')) return;
-    const card = items.find((x) => x.id === row.dataset.id);
+    let card = items.find((x) => x.id === row.dataset.id);
     if (!card) return;
     const editBtn = e.target.closest('[data-edit]');
     const wantView = e.target.closest('[data-view]') || (!caps.editCards && !editBtn);
     if (!editBtn && !wantView) return;
     panel.hidden = false;
     document.body.classList.add('panel-open');
+    // 一覧の行は検索の索引の写しで、更新や編集の後だと古いことがある。開くたびに詳細を取り直し、
+    // 過去の名刺なら同じ人の「現在」の名刺に切り替えて出す
+    const reqSeq = ++panelSeq;
+    panelBody.innerHTML = '<div class="skel" style="height:260px"></div>';
+    let fresh;
+    try {
+      fresh = await latestCard(card.id);
+    } catch (err) {
+      if (reqSeq === panelSeq) panelBody.innerHTML = `<p class="alert alert-error">${esc(errorMessage(err))}</p>`;
+      return;
+    }
+    if (reqSeq !== panelSeq || panel.hidden) return; // 開いている間に別の行が押された
+    swapRow(card.id, fresh);
+    card = fresh;
     if (editBtn) {
       panelBody.replaceChildren();
       await mountCardForm(panelBody, {

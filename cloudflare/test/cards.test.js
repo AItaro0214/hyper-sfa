@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classifyDuplicates, diffCards, failureFor, keyColumns, sanitizeCard } from '../worker/src/lib/cards.js';
+import { diffCards, failureFor, keyColumns, sanitizeCard } from '../worker/src/lib/cards.js';
 
 test('検索用の列: 配列は空白でつなぐ', () => {
   const k = keyColumns({ companyN: 'あしすと', nameN: 'やまだたろう', phonesDigits: ['0312345678', '09012345678'], emailsN: ['a@x.jp'] });
@@ -27,12 +27,4 @@ test('失敗の種類と文言', () => {
   assert.equal(failureFor('blocked').retryable, false);
   assert.equal(failureFor('empty').retryable, true);
   assert.equal(failureFor('???').kind, 'provider');
-});
-
-test('重複: メールが同じなら email、そうでなければ company_name', () => {
-  const d = classifyDuplicates({ emailsN: ['a@x.jp'] }, [
-    { id: '1', company: 'A', name: 'B', emails_n: 'a@x.jp z@x.jp' },
-    { id: '2', company: 'A', name: 'B', emails_n: 'q@x.jp' },
-  ]);
-  assert.deepEqual(d.map((x) => x.reason), ['email', 'company_name']);
 });

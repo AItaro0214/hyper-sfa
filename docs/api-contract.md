@@ -108,13 +108,19 @@
   "editCount": 2, "scanCount": 1, "version": 3,
   "imageOptimized": false,
   "failure": { "kind": "parse" | "truncated" | "empty" | "blocked" | "provider" | "not_configured", "message": "...", "retryable": true } | null,
-  "duplicates": [{ "id": "...", "company": "...", "name": "...", "reason": "email" | "company_name" }]
+  "personId": "...", "isCurrent": true, "supersedes": "<前の名刺の ID>" | null,
+  "person": { "cards": [{ "id", "company", "department", "title", "name", "createdAt", "isCurrent" }] },
+  "matches": [{ "id": "...", "company": "...", "department": "...", "title": "...", "name": "...", "createdAt": "...", "kind": "same_card" | "same_person" | "same_name", "reason": "email" | "mobile" | "phone" | "company_name" | "name" }]
 }
 ```
 
 - `imageUrls` はそのまま `<img src>` と `<a href>` に使える URL。AWS 版は 15 分で切れる署名付き URL、Cloudflare 版は同一オリジンの `/api/...`。
 - `rawText` は詳細（`GET /api/cards/{id}`）だけに入る。一覧には入れない。
-- `duplicates` は `status` が `review` のときだけ。
+- `matches` は `status` が `review` のときだけ（design §5.5）。`same_card` = 同じ名刺の二重登録、`same_person` = 同じ人の新しい名刺（更新の候補）、`same_name` = 同じ名前の別人かもしれない。強い順に並び、最大 5 件。
+- `person.cards` は詳細（`GET /api/cards/{id}`）だけに入る。同じ `personId` の名刺を古い順に。`isCurrent` が `true` の名刺は 1 人に 1 枚。
+- 一覧（`GET /api/cards`、`GET /api/companies`、検索）は `isCurrent: true` の名刺だけ。**`includePast` は実装しない**（過去の名刺を一覧に出すには検索の索引に載せる必要があり、名刺が増えるほど Lambda の起動と検索が遅く重くなるため）。過去の名刺は詳細の `person.cards` からたどる。
+- `matches` の `title` は、AWS 版では確認画面に出す最大 5 件だけ名刺を読んで補う（検索の索引に役職を載せられないため）。
+- `personId` が無い既存の名刺は、読むときに「名刺 ID = 人 ID」と見なす（移行の書き込みはしない）。
 - Cloudflare 版では `deptIds` と `departments` は空配列。
 
 | メソッドとパス | 内容 |
@@ -126,13 +132,15 @@
 | `GET /api/cards` | 検索。`company` `name` `department` `phone` `email` `note`（備考と役職の両方に当てる） `owner`（利用者 ID）`from` `to`（登録日、`YYYY-MM-DD`）`status` `dept`（担当部署 ID）`cursor` `limit`。応答 `{ "items", "nextCursor", "total" }`。`items` は `rawText` 抜き |
 | `GET /api/cards/{id}` | 詳細 |
 | `GET /api/companies` | 取引先（会社 → 部署 → 人）の集計。見える範囲の名刺（確認済みのみ、削除済みを除く）から作る。`q`（会社名の部分一致。表記ゆれは `companyKey` で吸収）`limit`（会社の数。既定 20、最大 100）。応答 `{ "items": [{ "company", "key", "count", "departments": [{ "name", "count", "people": [{ "id", "name", "title" }] }] }] }`。`company` は名刺に多く書かれている表記、`key` は `companyKey` の値。部署名が空の名刺は `name: ""` の部署にまとめる。会社は `count` の多い順、部署は名前順、人は名前順。会社名が空の名刺は含めない。**AWS 版は `title` を返さない**（検索用の索引 gsi1 が INCLUDE の上限 20 属性を使い切っていて役職を載せられないため。人は `{ id, name }`）。Cloudflare 版は `title` を返す |
-| `PUT /api/cards/{id}` | `{ company, department, title, name, nameReading, phones, mobiles, emails, note, deptIds, version, source: "review" | "search" | "detail", confirm: true }`。`confirm: true` で `review` → `confirmed`。`version` 不一致は 409 |
+| `PUT /api/cards/{id}` | `{ company, department, title, name, nameReading, phones, mobiles, emails, note, deptIds, version, source: "review" | "search" | "detail", confirm: true, personAction?: { "kind": "update", "ofCardId": "..." } | { "kind": "separate" } }`。`confirm: true` で `review` → `confirmed`。`version` 不一致は 409。`matches` に `same_person` があるのに `personAction` が無ければ 400 `validation`。`error.details` は `{ "code": "person_choice_required", "matches": [...] }`（項目ごとの誤りの配列ではなくオブジェクト）。`personAction` を付けても `ofCardId` の名刺が確認済みの現在の名刺でなければ 409。`update` は編集できる人だけ（閲覧だけの人は `separate` のみ）。`update` にすると、この名刺が `ofCardId` の人の「現在」になり、前の名刺は `isCurrent: false` になる（1 回の書き込みで同時に。design §5.5） |
+| `POST /api/cards/{id}/person/link` | `{ "ofCardId" }`。保存済みの名刺を後から同じ人につなぐ。この名刺が新しい方なら「現在」になる（`createdAt` で決める）。つなげるのは相手の人にこの名刺 1 枚だけ（この名刺が別の人ともつながっているときは 409。先に外す）。編集できる人。応答は詳細の形 |
+| `POST /api/cards/{id}/person/unlink` | 間違ってつないだものを外す。この名刺だけを別の人（新しい `personId`、`isCurrent: true`）にする。残った人の「現在」は一番新しい名刺に付け直す（外す名刺は新しい `personId` の「現在」になる）。ほかの人とつながっていなければ何もせず詳細を返す。編集できる人 |
 | `DELETE /api/cards/{id}` | 論理削除。開発者（Cloudflare 版は `admin`）だけ。登録の途中（`status` が `confirmed` でない）の自分の下書きは本人も可。それ以外は 403 `forbidden` |
 | `POST /api/cards/{id}/images/replace` | 画像を縮小して置き換えるための PUT 先。`{ "uploads": [{ "kind": "front" / "back", "url", "method": "PUT", "headers" }] }`。**既存のキーに上書きする。** 編集できる人だけ。15 分有効 |
 | `POST /api/cards/{id}/images/optimized` | 縮小済みの印を付ける。`{ "imageOptimized": true, "imageOptimizedAt" }`。`version` は増えず、履歴にも残らない |
 
 縮小の決まり: 長辺 900px、JPEG 品質 0.4、サムネイルはそのまま。1 枚につき 1 回（表と裏を終えてから印を付ける）。元の 0.9 倍未満に減らないときは上書きせず印だけ付ける。失敗したら黙って次に詳細画面を開いたときにやり直す。Cloudflare 版の `imageUrls` には `?v=` が付く（ブラウザのキャッシュ対策）。R2 は上書きで元の画像が即座に無くなる。S3 はバージョニングで上書き前の版が 30 日残る。
-| `GET /api/cards/{id}/minutes` | その人との議事録（見える範囲）。議事録の一覧と同じ形 |
+| `GET /api/cards/{id}/minutes` | その人との議事録（見える範囲）。同じ `personId` の名刺（過去の名刺を含む）に紐づく議事録をまとめて、新しい順。議事録の一覧と同じ形 |
 | `GET /api/departments` | `{ "items": [{ "id", "name", "order", "active" }] }`。Cloudflare 版は空 |
 | `GET /api/directory` | `{ "items": [{ "id", "displayName", "email", "departments": [...] }] }`。共有や同席者の選択用。無効の人は除く |
 

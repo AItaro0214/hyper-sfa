@@ -4,7 +4,7 @@ import { buildCardSearch, clampLimit, escapeLike } from '../worker/src/lib/searc
 
 test('条件が無ければ、確認待ちと確認済みだけ・削除済みを除く', () => {
   const q = buildCardSearch({});
-  assert.match(q.listSql, /deleted_at IS NULL AND status IN \('review', 'confirmed'\)/);
+  assert.match(q.listSql, /deleted_at IS NULL AND is_current = 1 AND status IN \('review', 'confirmed'\)/);
   assert.match(q.listSql, /ORDER BY id DESC LIMIT \?$/);
   assert.deepEqual(q.listParams, [51]);
   assert.deepEqual(q.countParams, []);

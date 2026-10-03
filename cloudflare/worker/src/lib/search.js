@@ -35,7 +35,8 @@ export function buildCardSearch(
   const col = (name) => prefix + name;
   const like = (name) => `${col(name)} LIKE ? ESCAPE '\\'`;
   const terms = filters.terms ?? {};
-  const where = [`${col('deleted_at')} IS NULL`];
+  // 一覧・検索は人ごとの「現在」の名刺だけ。過去の名刺は詳細の「この人の名刺の変遷」からたどる
+  const where = [`${col('deleted_at')} IS NULL`, `${col('is_current')} = 1`];
   const params = [];
 
   if (filters.status) {

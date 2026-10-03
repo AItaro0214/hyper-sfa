@@ -100,6 +100,11 @@ export function buildListQuery(p) {
     cpConds.push('c.card_id = ?');
     cpParams.push(p.cardId);
   }
+  // 人の単位（design §5.5b）。同じ人の過去の名刺に紐づく議事録もまとめる。idx_cards_person で引く
+  if (p.personId) {
+    cpConds.push('c.card_id IN (SELECT id FROM cards WHERE person_id = ?)');
+    cpParams.push(p.personId);
+  }
   if (cpConds.length) {
     where.push(
       `EXISTS (SELECT 1 FROM minute_counterparts c WHERE c.minute_id = m.id AND ${cpConds.join(' AND ')})`,

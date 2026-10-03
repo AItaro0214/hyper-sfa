@@ -38,6 +38,23 @@ CARDS.push(
   card(78, { company: '株式会社サンプル1', department: '総務部', title: '課長', name: '伊藤 三郎' }),
   card(79, { company: 'サンプル1（株）', department: '営業部', title: '係長', name: '渡辺 四郎' }),
 );
+// 見本の 1 人(c2)に 3 枚の変遷: c80(主任) → c81(課長) → c2(部長・現在)
+const ago = (d) => new Date(Date.now() - d * 86400_000).toISOString();
+CARDS.push(
+  card(80, { personId: 'p2', isCurrent: false, company: '株式会社サンプル旧', department: '営業課', title: '主任', name: '田中 太郎2', createdAt: ago(900) }),
+  card(81, { personId: 'p2', isCurrent: false, company: '株式会社サンプル2', department: '営業部', title: '課長', name: '田中 太郎2', createdAt: ago(400), supersedes: 'c80' }),
+);
+Object.assign(CARDS.find((c) => c.id === 'c2'), { personId: 'p2', supersedes: 'c81', createdAt: ago(20) });
+const pid = (c) => c.personId || c.id;
+const personCards = (c) => CARDS.filter((x) => pid(x) === pid(c) && x.status === 'confirmed').sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  .map((x) => ({ id: x.id, company: x.company, department: x.department, title: x.title, name: x.name, createdAt: x.createdAt, isCurrent: x.isCurrent !== false }));
+const matchOf = (x, kind, reason) => ({ id: x.id, company: x.company, department: x.department, title: x.title, name: x.name, createdAt: x.createdAt, kind, reason });
+function detailView(c) {
+  const out = { ...cardView(c), personId: pid(c), isCurrent: c.isCurrent !== false, supersedes: c.supersedes || null, person: { cards: personCards(c) } };
+  // 確認待ちの見本: 同じ人(c2)の候補と、同じ名前(c3)
+  if (c.status === 'review') out.matches = c.matches || [matchOf(CARDS.find((x) => x.id === 'c2'), 'same_person', 'email'), matchOf(CARDS.find((x) => x.id === 'c3'), 'same_name', 'name')];
+  return out;
+}
 const scans = new Map();
 let loggedIn = false;
 let devSettings = { keys: { gemini: { configured: true, last4: 'ab12', updatedAt: new Date().toISOString() }, openai: { configured: false } }, models: { card: 'gemini-3.5-flash-lite', transcribe: 'gemini-3.5-flash-lite', summarize: 'gemini-3.6-flash', qa: 'gemini-3.6-flash' }, prompts: {} };
@@ -65,7 +82,7 @@ function groupCompanies(q, limit) {
   const key = companyKey(q);
   const by = new Map();
   for (const c of CARDS) {
-    if (c.status !== 'confirmed' || !c.company) continue;
+    if (c.status !== 'confirmed' || !c.company || c.isCurrent === false) continue;
     const k = companyKey(c.company);
     if (key && !k.includes(key)) continue;
     if (!by.has(k)) by.set(k, { key: k, cards: [] });
@@ -151,13 +168,13 @@ async function api(req, res, url) {
   }
   if (p === '/api/cards/scan') {
     const id = `c${CARDS.length + 1}`;
-    CARDS.unshift(card(CARDS.length + 1, { id, status: 'processing', company: '株式会社読み取り', name: '新規 花子', version: 1, duplicates: [{ id: 'c1', company: '株式会社サンプル1', name: '田中 太郎1', reason: 'email' }] }));
+    CARDS.unshift(card(CARDS.length + 1, { id, status: 'processing', company: '株式会社読み取り', name: '新規 花子', version: 1 }));
     scans.set(id, Date.now());
     return send(res, 202, { id, status: 'processing' });
   }
   if (p === '/api/companies' && m === 'GET') return send(res, 200, { items: groupCompanies(q.get('q') || '', Math.min(Number(q.get('limit') || 20), 100)) });
   if (p === '/api/cards' && m === 'GET') {
-    let items = CARDS.filter((c) => c.status !== 'failed');
+    let items = CARDS.filter((c) => c.status !== 'failed' && (c.isCurrent !== false || q.get('includePast') === '1'));
     const has = (field, qv) => norm(qv).split(/\s+/).filter(Boolean).every((w) => norm(field).includes(w));
     if (q.get('company')) items = items.filter((c) => has(c.company, q.get('company')));
     if (q.get('name')) items = items.filter((c) => has(c.name, q.get('name')));
@@ -174,12 +191,39 @@ async function api(req, res, url) {
     const c = CARDS.find((x) => x.id === g[1]);
     if (!c) return err(res, 404, 'not_found', '名刺が見つかりません');
     const sub = g[2];
-    if (!sub && m === 'GET') return send(res, 200, cardView(c));
-    if (sub === '/status') { cardView(c); return send(res, 200, c.status === 'processing' ? { status: 'processing' } : { status: c.status, card: c }); }
+    if (!sub && m === 'GET') return send(res, 200, detailView(c));
+    if (sub === '/status') { cardView(c); return send(res, 200, c.status === 'processing' ? { status: 'processing' } : { status: c.status, card: detailView(c) }); }
     if (sub === '/rescan') { c.status = 'processing'; scans.set(c.id, Date.now()); return send(res, 202, { status: 'processing' }); }
     if (sub === '/minutes') return send(res, 200, { items: [{ id: 'm1', title: `${c.company} 定例`, heldAt: new Date().toISOString(), status: 'done' }], nextCursor: null });
+    if (sub === '/person/link' && m === 'POST') {
+      const o = CARDS.find((x) => x.id === body.ofCardId);
+      if (!o) return err(res, 404, 'not_found', '名刺が見つかりません');
+      const keep = pid(o), old = pid(c);
+      CARDS.filter((x) => pid(x) === old).forEach((x) => { x.personId = keep; });
+      const all = CARDS.filter((x) => pid(x) === keep).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      all.forEach((x, i) => { x.isCurrent = i === all.length - 1; x.supersedes = i ? all[i - 1].id : null; });
+      return send(res, 200, detailView(c));
+    }
+    if (sub === '/person/unlink' && m === 'POST') {
+      const old = pid(c);
+      c.personId = c.id; c.isCurrent = true; c.supersedes = null;
+      const rest = CARDS.filter((x) => pid(x) === old && x.id !== c.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      rest.forEach((x, i) => { x.isCurrent = i === rest.length - 1; x.supersedes = i ? rest[i - 1].id : null; });
+      return send(res, 200, detailView(c));
+    }
     if (!sub && m === 'PUT') {
       if (body.version !== c.version) return err(res, 409, 'conflict', 'ほかの人が先に更新しました');
+      if (c.status === 'review' && body.confirm) {
+        const ms = detailView(c).matches || [];
+        const pa = body.personAction;
+        if (ms.some((x) => x.kind === 'same_person') && !pa) return err(res, 400, 'validation', '同じ人の名刺があります。更新か別の人かを選んでください', { code: 'person_choice_required', matches: ms });
+        if (pa && pa.kind === 'update') {
+          const o = CARDS.find((x) => x.id === pa.ofCardId);
+          if (!o) return err(res, 400, 'validation', '名刺が見つかりません');
+          CARDS.filter((x) => pid(x) === pid(o)).forEach((x) => { x.isCurrent = false; });
+          c.personId = pid(o); c.isCurrent = true; c.supersedes = o.id;
+        } else { c.personId = c.id; c.isCurrent = true; }
+      }
       Object.assign(c, { company: body.company, department: body.department, title: body.title ?? '', name: body.name, nameReading: body.nameReading, phones: body.phones, mobiles: body.mobiles, emails: body.emails, note: body.note, deptIds: body.deptIds || c.deptIds, version: c.version + 1, updatedAt: new Date().toISOString() });
       c.departments = c.deptIds.map((id) => DEPTS.find((d) => d.id === id)).filter(Boolean);
       if (body.confirm) c.status = 'confirmed';

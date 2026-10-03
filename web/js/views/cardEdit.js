@@ -171,17 +171,25 @@ export async function mountCardForm(container, opts) {
   if (onCancel) form.querySelector('[data-cancel]').addEventListener('click', onCancel);
   // 削除は保存の流れと分けて、フォームの一番下に置く（押し間違いを防ぐ。確認は呼び出し元で出す）
   if (onDelete) container.querySelector('[data-delete]').addEventListener('click', () => onDelete(card));
-  const handle = { isDirty: () => snapshot() !== initial, values: () => ({ ...read(), deptIds: [...selected] }) };
+  // 人の選択（更新か別人か）が要る間は保存を押せなくする。呼び出し元が personGate で決める
+  const submitBtn = form.querySelector('button[type=submit]');
+  const blocked = () => !!(opts.personGate && opts.personGate.blocked());
+  const applyBlock = () => { submitBtn.disabled = blocked(); };
+  applyBlock();
+  const handle = { isDirty: () => snapshot() !== initial, values: () => ({ ...read(), deptIds: [...selected] }), refreshGate: applyBlock, submit: () => form.requestSubmit() };
   extraButtons.forEach((b, i) => form.querySelector(`[data-extra="${i}"]`).addEventListener('click', () => b.onClick(handle)));
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     errBox.hidden = true;
+    if (blocked()) { showErr('この人の名刺が登録済みです。「更新として登録」か「別の人として登録」を選んでください。'); return; }
     if (useDepts && selected.size === 0) { showErr('担当部署を 1 つ以上選んでください。'); return; }
     const btns = form.querySelectorAll('button');
     btns.forEach((b) => { b.disabled = true; });
     const body = { ...read(), version: card.version, source, confirm: card.status !== 'confirmed' ? true : undefined };
     if (useDepts) body.deptIds = [...selected];
+    const pa = opts.personGate && opts.personGate.action();
+    if (pa && body.confirm) body.personAction = pa;
     try {
       const res = await api.put(`/api/cards/${encodeURIComponent(card.id)}`, body);
       const saved = res && res.id ? res : res && res.card ? res.card : await api.get(`/api/cards/${encodeURIComponent(card.id)}`);
@@ -191,6 +199,17 @@ export async function mountCardForm(container, opts) {
       if (onSaved) onSaved(saved);
     } catch (ex) {
       btns.forEach((b) => { b.disabled = false; });
+      applyBlock();
+      // 人の選択が要ると言われたら、確認画面の枠を出し直してもらう
+      const need = ex instanceof ApiError && ex.status === 400 && opts.onPersonChoiceRequired
+        && (ex.code === 'person_choice_required' || (ex.details && (ex.details.code === 'person_choice_required' || Array.isArray(ex.details.matches))));
+      if (need) {
+        const ms = (ex.details && ex.details.matches) || [];
+        opts.onPersonChoiceRequired(ms);
+        applyBlock();
+        showErr('この人の名刺が登録済みです。「更新として登録」か「別の人として登録」を選んでください。');
+        return;
+      }
       if (ex instanceof ApiError && ex.status === 409) {
         // 黙って上書きしない。最新の内容を見せて、直す人に判断してもらう。
         try {

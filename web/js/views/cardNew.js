@@ -1,7 +1,7 @@
 // 名刺を登録する: 読み込む → 待つ → 確認・修正 → 保存。続けて何枚も登録できる。
 import { api } from '../api.js';
 import { state } from '../state.js';
-import { esc, el, toast, confirmDialog, errorMessage } from '../ui.js';
+import { esc, el, toast, confirmDialog, errorMessage, formatDate } from '../ui.js';
 import { icon } from '../icons.js';
 import { prepareImages, uploadImages } from '../imageUtil.js';
 import { mountCardForm } from './cardEdit.js';
@@ -143,14 +143,71 @@ export function renderCardNew(container) {
 
   async function stepReview(card) {
     root.innerHTML = `<h1>内容を確かめる</h1>${stepsHtml(2)}<div data-dup></div><div class="step-in" data-form></div>`;
-    const dups = card.duplicates || [];
-    if (dups.length) {
-      root.querySelector('[data-dup]').innerHTML = `<div class="alert alert-warn"><strong>似た名刺がすでにあります。</strong>
-        <ul>${dups.map((d) => `<li><a href="/cards/${encodeURIComponent(d.id)}" target="_blank" rel="noopener">${esc(d.company)} ${esc(d.name)}</a>（${d.reason === 'email' ? '同じメールアドレス' : '同じ会社名と氏名'}）</li>`).join('')}</ul>
-        <p class="muted">別の人なら、そのまま保存すると別の名刺として登録されます。</p></div>`;
+    const caps = state.me.capabilities || {};
+    const dupBox = root.querySelector('[data-dup]');
+    let matches = card.matches || [];
+    // 更新か別の人かの選択。同じ人の候補があるあいだは、選ぶまで保存できない
+    let choice = null; // { kind: 'update', ofCardId } | { kind: 'separate' }
+    let handle = null;
+    const sameCard = () => matches.filter((m) => m.kind === 'same_card');
+    const samePerson = () => matches.filter((m) => m.kind === 'same_person');
+    const sameName = () => matches.filter((m) => m.kind === 'same_name');
+    const cardLink = (m) => `<a href="/cards/${encodeURIComponent(m.id)}" target="_blank" rel="noopener">${esc(m.company)} ${esc(m.name)}</a>`;
+    const line = (m) => [m.company, m.department, m.title].filter(Boolean).map(esc).join(' / ') || '-';
+
+    function paintMatches() {
+      const sc = sameCard(), sp = samePerson(), sn = sameName();
+      if (!choice && sp.length === 0) choice = null;
+      if (choice && choice.kind === 'update' && !sp.some((m) => m.id === choice.ofCardId)) choice = null;
+      let html = '';
+      if (sc.length) {
+        html += `<div class="alert alert-error match-same-card" role="alert"><strong>この名刺はすでに登録されています</strong>
+          <ul>${sc.map((m) => `<li>${cardLink(m)} <span class="muted">${line(m)}（${esc(formatDate(m.createdAt))} 登録）</span></li>`).join('')}</ul>
+          <button type="button" class="btn btn-small" data-force>それでも登録する</button></div>`;
+      }
+      if (sp.length) {
+        const canUpdate = !!caps.editCards;
+        const pick = choice && choice.kind === 'update' ? choice.ofCardId : sp[0].id;
+        html += `<section class="match-person" aria-label="同じ人の名刺">
+          <h2>この人の名刺があります</h2>
+          <ul class="match-cards">${sp.map((m) => `<li>
+            ${canUpdate && sp.length > 1 ? `<label class="match-pick"><input type="radio" name="ofcard" value="${esc(m.id)}" ${m.id === pick ? 'checked' : ''}> この人</label>` : ''}
+            <div>${cardLink(m)}</div>
+            <div class="match-meta"><span>会社 ${esc(m.company) || '-'}</span><span>部署 ${esc(m.department) || '-'}</span><span>役職 ${esc(m.title) || '-'}</span><span>登録日 ${esc(formatDate(m.createdAt))}</span></div></li>`).join('')}</ul>
+          <div class="match-choice">
+            ${canUpdate ? `<button type="button" class="btn btn-lg match-btn${choice && choice.kind === 'update' ? ' on' : ''}" data-choose="update" aria-pressed="${!!(choice && choice.kind === 'update')}">更新として登録<small>前の名刺は記録に残ります</small></button>` : ''}
+            <button type="button" class="btn btn-lg match-btn${choice && choice.kind === 'separate' ? ' on' : ''}" data-choose="separate" aria-pressed="${!!(choice && choice.kind === 'separate')}">別の人として登録</button>
+          </div>
+          ${choice ? '' : '<p class="match-need">どちらで登録するか選ぶと、保存できます。</p>'}
+        </section>`;
+      }
+      if (sn.length) {
+        html += `<p class="match-name muted">同じ名前の人がいます: ${sn.map((m) => `${cardLink(m)}（${esc(m.company) || '会社名なし'}）`).join('、')}。別の人として登録されます。</p>`;
+      }
+      dupBox.innerHTML = html;
+      handle && handle.refreshGate();
     }
-    await mountCardForm(root.querySelector('[data-form]'), {
-      card, source: 'review', submitLabel: '保存', defaultDeptIds: lastDeptIds || undefined,
+    dupBox.addEventListener('click', (e) => {
+      if (e.target.closest('[data-force]')) { handle && handle.submit(); return; }
+      const b = e.target.closest('[data-choose]');
+      if (!b) return;
+      if (b.dataset.choose === 'separate') choice = { kind: 'separate' };
+      else {
+        const r = dupBox.querySelector('input[name=ofcard]:checked');
+        choice = { kind: 'update', ofCardId: r ? r.value : samePerson()[0].id };
+      }
+      paintMatches();
+    });
+    dupBox.addEventListener('change', (e) => {
+      if (e.target.name !== 'ofcard') return;
+      if (choice && choice.kind === 'update') { choice = { kind: 'update', ofCardId: e.target.value }; paintMatches(); }
+    });
+    paintMatches();
+
+    handle = await mountCardForm(root.querySelector('[data-form]'), {
+      card, source: 'review',
+      personGate: { blocked: () => samePerson().length > 0 && !choice, action: () => (samePerson().length ? choice : null) },
+      onPersonChoiceRequired: (ms) => { if (ms.length) matches = ms; else if (!samePerson().length) return; choice = null; paintMatches(); dupBox.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, submitLabel: '保存', defaultDeptIds: lastDeptIds || undefined,
       extraButtons: [{
         label: '読み取り直す',
         onClick: async (form) => {

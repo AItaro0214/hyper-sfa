@@ -191,3 +191,13 @@ Gemini は既存の `buildGenerateRequest` に `parts: [{ fileData: { mimeType: 
 | `groupByCompany(cards, { q, limit })` | 名刺の配列（`company` `department` `name` `title` `id` `status` `deletedAt`）を `GET /api/companies` の応答の形にまとめる。両バックエンドと mock が同じ関数を使う。AWS 版は応答から `title` を削って返す（api-contract.md） |
 
 `companyKey` は `search.js` の `normalizeText` を元にする。検索の `companyN` とは別物で、こちらは法人格を落とす（「株式会社アシスト」と「アシスト（株）」を同じ取引先と見なすため）。
+
+## 18. `person.js` — 同じ人の判定（design §5.5b）
+
+| 関数 | 内容 |
+| --- | --- |
+| `matchKeys(card)` | `{ emails, phones, mobiles, nameN, companyN, companyKeyName, titleN }`。`phones` は電話 + 携帯の数字だけ（引き表の検索用）、`mobiles` は携帯だけ。`companyKeyName` = `companyKey(company) + '\|' + nameN`（どちらかが空なら `''`） |
+| `classifyMatch(mine, other)` | 2 つの `matchKeys` から `{ kind, reason }` か `null`。`same_card`（氏名と会社が同じで、電話・携帯・メールの集合と役職が同じ）→ `same_person`（メール = `email`、携帯 = `mobile`、`companyKeyName` = `company_name`）→ `same_name`（氏名 = `name`）の順に強い方を返す。代表電話だけの一致は「同じ人」の根拠にしない |
+| `rankMatches(list, { max = 5 })` | `{ kind, reason, createdAt? }` の配列を、種類 → 根拠（email, mobile, company_name, name）→ 新しい順に並べて max 件 |
+
+`groupByCompany` は `isCurrent === false` の名刺を数えない（過去の名刺は取引先の集計に入れない）。

@@ -16,7 +16,7 @@ export async function loadDirectory() {
 
 // ---- 名刺から 1 枚選ぶ ----
 // 戻り値: { cardId, company, department, name } / 名刺が無い相手は cardId が null / やめたら null
-export function pickCard({ title = '商談の相手を選ぶ' } = {}) {
+export function pickCard({ title = '商談の相手を選ぶ', manual = true } = {}) {
   return new Promise((resolve) => {
     let picked = null;
     const m = showModal({
@@ -30,7 +30,7 @@ export function pickCard({ title = '商談の相手を選ぶ' } = {}) {
           <button class="mn-btn mn-btn-primary" type="submit">探す</button>
         </form>
         <div class="mn-pick-results" data-r="results" aria-live="polite"><p class="mn-muted">読み込んでいます…</p></div>
-        <details class="mn-fold"><summary>名刺が無い相手を、手で入力する</summary>
+        ${manual ? `<details class="mn-fold"><summary>名刺が無い相手を、手で入力する</summary>
           <form class="mn-manual" data-f="manual">
             <label>会社名 <input class="mn-input" name="company"></label>
             <label>部署名 <input class="mn-input" name="department"></label>
@@ -38,7 +38,7 @@ export function pickCard({ title = '商談の相手を選ぶ' } = {}) {
             <button class="mn-btn" type="submit">この内容で追加</button>
             <p class="mn-muted">後で名刺を登録したら、紐づけ直せます。</p>
           </form>
-        </details>`,
+        </details>` : ''}`,
     });
     const results = m.el.querySelector('[data-r=results]');
     const searchForm = m.el.querySelector('[data-f=search]');
@@ -101,7 +101,7 @@ export function pickCard({ title = '商談の相手を選ぶ' } = {}) {
     searchForm.addEventListener('submit', (ev) => { ev.preventDefault(); clearTimeout(timer); run(); });
     run();
 
-    m.el.querySelector('[data-f=manual]').addEventListener('submit', (ev) => {
+    m.el.querySelector('[data-f=manual]')?.addEventListener('submit', (ev) => {
       ev.preventDefault();
       const fd = new FormData(ev.currentTarget);
       const company = String(fd.get('company')).trim();

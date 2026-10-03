@@ -93,7 +93,7 @@ export function groupByCompany(cards, { q, limit = 20 } = {}) {
   const max = Math.min(Math.max(Math.trunc(Number(limit)) || 20, 1), 100);
   const companies = new Map();
   for (const c of cards ?? []) {
-    if (!c || c.status !== 'confirmed' || c.deletedAt) continue;
+    if (!c || c.status !== 'confirmed' || c.deletedAt || c.isCurrent === false) continue;
     const company = String(c.company ?? '').trim();
     if (!company) continue;
     const key = companyKey(company);

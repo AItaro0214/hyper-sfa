@@ -12,14 +12,16 @@ async function imageUrls(item) {
 
 /**
  * @param {object} item DynamoDB の名刺（一覧用に削った写しでもよい）
- * @param {{ detail?: boolean, duplicates?: Array }} [opts] detail なら rawText を含める（一覧には入れない）
+ * @param {{ detail?: boolean, matches?: Array, person?: { cards: Array } }} [opts] detail なら rawText を含める（一覧には入れない）。
+ *   person は詳細だけ（人の名刺の一覧。呼び出し側が Query で作る）
  */
-export async function presentCard(item, { detail = false, duplicates } = {}) {
+export async function presentCard(item, { detail = false, matches, person } = {}) {
   const depts = await departmentMap();
   const deptIds = Array.isArray(item.deptIds) ? item.deptIds : [];
   const out = {
     id: item.id ?? String(item.pk).slice('CARD#'.length),
-    status: item.status,
+    // 過去の名刺（superseded）も、画面には確認済みとして見せる。過去かどうかは isCurrent で分かる
+    status: item.status === 'superseded' ? 'confirmed' : item.status,
     company: item.company ?? '',
     department: item.department ?? '',
     title: item.title ?? '',
@@ -40,11 +42,16 @@ export async function presentCard(item, { detail = false, duplicates } = {}) {
     editCount: item.editCount ?? 0,
     scanCount: item.scanCount ?? 0,
     version: item.version ?? 1,
+    // 人の単位（design §5.5b）。personId が無い古い名刺は「名刺 ID = 人 ID」。移行の書き込みはしない
+    personId: item.personId ?? item.id ?? String(item.pk).slice('CARD#'.length),
+    isCurrent: item.isCurrent !== false,
+    supersedes: item.supersedes ?? null,
     failure: item.failure
       ? { kind: item.failure.kind, message: item.failure.message ?? '', retryable: item.failure.retryable !== false }
       : null,
   };
   if (detail) out.rawText = item.rawText ?? '';
-  if (duplicates && item.status === 'review') out.duplicates = duplicates;
+  if (matches && item.status === 'review') out.matches = matches;
+  if (detail && person) out.person = person;
   return out;
 }

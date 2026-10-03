@@ -23,6 +23,7 @@ export async function housekeeping(env) {
     if (keys.length) await env.IMAGES.delete(keys);
     await env.DB.batch([
       env.DB.prepare('DELETE FROM card_history WHERE card_id = ?').bind(c.id),
+      env.DB.prepare('DELETE FROM card_contacts WHERE card_id = ?').bind(c.id),
       env.DB.prepare('DELETE FROM cards WHERE id = ?').bind(c.id),
     ]);
   }

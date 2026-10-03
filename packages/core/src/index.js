@@ -28,3 +28,4 @@ export * from './permissions.js';
 export * from './usage.js';
 export * from './util.js';
 export * from './company.js';
+export * from './person.js';

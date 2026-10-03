@@ -1,8 +1,7 @@
 // 画像のアップロード、名刺の読み取り・検索・編集・削除（docs/api-contract.md §4）。
 // 全員がすべての名刺を見られる（部署の仕組みは持たない）。
-import { companyKey, groupByCompany, normalizeText, parseQuery, searchKeys, ulid } from '../core.js';
+import { companyKey, groupByCompany, matchKeys, normalizeText, parseQuery, searchKeys, ulid } from '../core.js';
 import {
-  classifyDuplicates,
   diffCards,
   failureFor,
   keyColumns,
@@ -10,6 +9,16 @@ import {
   sanitizeCard,
 } from '../lib/cards.js';
 import { ApiError, conflict, notFound, rateLimited } from '../lib/errors.js';
+import {
+  GUARD_SQL,
+  buildMatchQuery,
+  contactStatements,
+  isGuardError,
+  matchesFromRows,
+  personCardsOf,
+  planCurrent,
+  rowMatchKeys,
+} from '../lib/person.js';
 import { envNumber } from '../lib/http.js';
 import { buildCardSearch, clampLimit, escapeLike } from '../lib/search.js';
 import { signedPath, verifySignedPath } from '../lib/sign.js';
@@ -30,26 +39,61 @@ async function loadCard(env, id) {
   return row;
 }
 
-async function findDuplicates(env, row) {
-  const emails = (row.emails_n || '').split(' ').filter(Boolean);
-  const conds = [];
-  const params = [row.id];
-  for (const e of emails) {
-    conds.push("emails_n LIKE ? ESCAPE '\\'");
-    params.push(`%${e.replace(/[\\%_]/g, (m) => `\\${m}`)}%`);
-  }
-  if (row.company_n && row.name_n) {
-    conds.push('(company_n = ? AND name_n = ?)');
-    params.push(row.company_n, row.name_n);
-  }
-  if (!conds.length) return [];
+// 同じ名刺・同じ人・同じ名前の候補（design §5.5b）。索引の効く = / IN だけで引き、全件は走査しない
+async function findMatches(env, mine, selfId) {
+  const q = buildMatchQuery(mine, { selfId });
+  if (!q) return [];
+  const { results } = await env.DB.prepare(q.sql).bind(...q.params).all();
+  return matchesFromRows(results ?? [], mine);
+}
+
+// 人の名刺（自分を含む。古い順）。idx_cards_person で引く
+async function loadPerson(env, row) {
   const { results } = await env.DB.prepare(
-    `SELECT id, company, name, emails_n FROM cards
-     WHERE deleted_at IS NULL AND id != ? AND status IN ('review', 'confirmed') AND (${conds.join(' OR ')}) LIMIT 5`,
+    `SELECT id, company, department, title, name, created_at, is_current FROM cards
+     WHERE person_id = ? AND deleted_at IS NULL AND status IN ('review', 'confirmed')`,
   )
-    .bind(...params)
+    .bind(row.person_id ?? row.id)
     .all();
-  return classifyDuplicates({ emailsN: emails }, results);
+  const rows = results ?? [];
+  if (!rows.some((r) => r.id === row.id)) rows.push(row);
+  return { cards: personCardsOf(rows) };
+}
+
+async function detailCard(env, row) {
+  const card = rowToCard(row, { detail: true });
+  card.person = await loadPerson(env, row);
+  return card;
+}
+
+// 人に残る確認済みの名刺（自分を除く）。「現在」を付け直す材料
+async function personPeers(env, personId, exceptId) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, created_at, is_current, version, status FROM cards
+     WHERE person_id = ? AND id != ? AND deleted_at IS NULL AND status = 'confirmed'`,
+  )
+    .bind(personId, exceptId)
+    .all();
+  return results ?? [];
+}
+
+// 「現在」のフラグを付け替える文。version を条件にし、0 行なら GUARD で batch ごと巻き戻す
+function flipStatements(db, flips) {
+  return flips.flatMap((f) => [
+    db
+      .prepare('UPDATE cards SET is_current = ?, version = version + 1 WHERE id = ? AND version = ? AND deleted_at IS NULL')
+      .bind(f.current ? 1 : 0, f.id, f.version),
+    db.prepare(GUARD_SQL),
+  ]);
+}
+
+async function runBatch(env, stmts, message = 'ほかの人が先に更新しました。最新の内容を確かめてください') {
+  try {
+    await env.DB.batch(stmts);
+  } catch (e) {
+    if (isGuardError(e)) throw conflict(message);
+    throw e;
+  }
 }
 
 // 1 日の読み取り回数（再生成を含む）。超えていれば加算せずに 429
@@ -150,10 +194,10 @@ export function cardRoutes(app) {
     const id = ulid();
     const now = nowIso();
     await c.env.DB.prepare(
-      `INSERT INTO cards (id, status, image_front_key, image_back_key, thumb_key, created_by, created_at, updated_at, scan_count)
-       VALUES (?, 'processing', ?, ?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO cards (id, status, image_front_key, image_back_key, thumb_key, created_by, created_at, updated_at, scan_count, person_id)
+       VALUES (?, 'processing', ?, ?, ?, ?, ?, ?, 1, ?)`,
     )
-      .bind(id, front, back || null, thumb, user.id, now, now)
+      .bind(id, front, back || null, thumb, user.id, now, now, id)
       .run();
     await startWorkflow(c, { id, scan_count: 1 }, user, 'scan');
     return c.json({ id, status: 'processing' }, 202);
@@ -163,8 +207,8 @@ export function cardRoutes(app) {
     const row = await loadCard(c.env, c.req.param('id'));
     const out = { status: row.status };
     if (row.status === 'review' || row.status === 'confirmed') {
-      out.card = rowToCard(row, { detail: true });
-      if (row.status === 'review') out.card.duplicates = await findDuplicates(c.env, row);
+      out.card = await detailCard(c.env, row);
+      if (row.status === 'review') out.card.matches = await findMatches(c.env, rowMatchKeys(row), row.id);
     }
     if (row.status === 'failed') out.failure = safeJson(row.failure, failureFor('provider'));
     return c.json(out);
@@ -193,7 +237,7 @@ export function cardRoutes(app) {
   // 最終的な絞り込みは groupByCompany（companyKey）が行う
   app.get('/api/companies', async (c) => {
     const q = (c.req.query('q') ?? '').trim();
-    const where = ["status = 'confirmed'", 'deleted_at IS NULL', "company != ''"];
+    const where = ["status = 'confirmed'", 'deleted_at IS NULL', 'is_current = 1', "company != ''"];
     const params = [];
     if (q) {
       const likes = [];
@@ -260,8 +304,8 @@ export function cardRoutes(app) {
 
   app.get('/api/cards/:id', async (c) => {
     const row = await loadCard(c.env, c.req.param('id'));
-    const card = rowToCard(row, { detail: true });
-    if (row.status === 'review') card.duplicates = await findDuplicates(c.env, row);
+    const card = await detailCard(c.env, row);
+    if (row.status === 'review') card.matches = await findMatches(c.env, rowMatchKeys(row), row.id);
     return c.json(card);
   });
 
@@ -341,40 +385,142 @@ export function cardRoutes(app) {
     const after = sanitizeCard(input);
     const changes = diffCards(before, after);
     const confirming = body.confirm === true && row.status !== 'confirmed';
-    if (!changes.length && !confirming) return c.json(rowToCard(row, { detail: true }));
+    if (!changes.length && !confirming) return c.json(await detailCard(c.env, row));
 
-    const keys = keyColumns(searchKeys(after));
+    // 同じ人の判定は、確認して保存するときだけ（design §5.5b）
+    let prev = null;
+    if (confirming) {
+      const action = body.personAction;
+      if (action != null && action.kind !== 'update' && action.kind !== 'separate') {
+        throw new ApiError(400, 'validation', 'personAction が正しくありません', {
+          details: [{ field: 'personAction', message: 'update か separate を指定してください' }],
+        });
+      }
+      if (action?.kind === 'update') {
+        if (!action.ofCardId || typeof action.ofCardId !== 'string' || action.ofCardId === row.id) {
+          throw new ApiError(400, 'validation', 'ofCardId が正しくありません', {
+            details: [{ field: 'personAction', message: '前の名刺を指定してください' }],
+          });
+        }
+        prev = await loadCard(c.env, action.ofCardId);
+        if (prev.status !== 'confirmed' || prev.is_current === 0) {
+          throw conflict('その名刺はすでに更新されています。最新の内容を読み込み直してください');
+        }
+      } else if (!action) {
+        const matches = await findMatches(c.env, matchKeys(after), row.id);
+        if (matches.some((m) => m.kind === 'same_person')) {
+          throw new ApiError(400, 'validation', '同じ人の名刺があります。更新として登録するか、別の人として登録するかを選んでください', {
+            details: { code: 'person_choice_required', matches },
+          });
+        }
+      }
+    }
+
+    const sk = searchKeys(after);
+    const keys = keyColumns(sk);
     const now = nowIso();
     const isEdit = row.status === 'confirmed' && changes.length > 0;
-    const res = await c.env.DB.prepare(
-      `UPDATE cards SET status = ?, company = ?, department = ?, title = ?, name = ?, name_reading = ?,
-         phones = ?, mobiles = ?, emails = ?, note = ?,
-         company_n = ?, name_n = ?, reading_n = ?, department_n = ?, phones_digits = ?, emails_n = ?, title_n = ?, note_n = ?,
-         failure = CASE WHEN ? THEN NULL ELSE failure END,
-         updated_by = ?, updated_at = ?, edit_count = edit_count + ?, version = version + 1
-       WHERE id = ? AND version = ? AND deleted_at IS NULL`,
-    )
-      .bind(
-        confirming ? 'confirmed' : row.status,
-        after.company, after.department, after.title, after.name, after.nameReading,
-        JSON.stringify(after.phones), JSON.stringify(after.mobiles), JSON.stringify(after.emails), after.note,
-        keys.company_n, keys.name_n, keys.reading_n, keys.department_n, keys.phones_digits, keys.emails_n, keys.title_n, keys.note_n,
-        confirming ? 1 : 0,
-        user.id, now, isEdit ? 1 : 0,
-        row.id, body.version,
-      )
-      .run();
-    if (!res.meta.changes) throw conflict('ほかの人が先に更新しました。最新の内容を確かめてください');
-
-    // 履歴: 確認画面で保存 = 登録、登録後の変更 = 編集。読み取り結果から変わっていない確認前の保存は残さない
-    if (confirming || isEdit) {
-      await c.env.DB.prepare(
-        `INSERT INTO card_history (id, card_id, type, actor_id, actor_name, source, changes, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-        .bind(ulid(), row.id, confirming ? 'create' : 'edit', user.id, user.displayName, source, JSON.stringify(changes), now)
-        .run();
+    const db = c.env.DB;
+    const stmts = [];
+    // 更新: 前の名刺を過去にする。同時に 2 人が更新しても、片方は GUARD で失敗して全体が巻き戻る
+    if (prev) {
+      stmts.push(
+        db
+          .prepare('UPDATE cards SET is_current = 0, version = version + 1 WHERE id = ? AND version = ? AND is_current = 1 AND deleted_at IS NULL')
+          .bind(prev.id, prev.version),
+        db.prepare(GUARD_SQL),
+      );
     }
-    return c.json(rowToCard(await loadCard(c.env, row.id), { detail: true }));
+    stmts.push(
+      db
+        .prepare(
+          `UPDATE cards SET status = ?, company = ?, department = ?, title = ?, name = ?, name_reading = ?,
+             phones = ?, mobiles = ?, emails = ?, note = ?,
+             company_n = ?, name_n = ?, reading_n = ?, department_n = ?, phones_digits = ?, emails_n = ?, title_n = ?, note_n = ?,
+             failure = CASE WHEN ? THEN NULL ELSE failure END,
+             person_id = COALESCE(?, person_id), supersedes = COALESCE(?, supersedes),
+             updated_by = ?, updated_at = ?, edit_count = edit_count + ?, version = version + 1
+           WHERE id = ? AND version = ? AND deleted_at IS NULL`,
+        )
+        .bind(
+          confirming ? 'confirmed' : row.status,
+          after.company, after.department, after.title, after.name, after.nameReading,
+          JSON.stringify(after.phones), JSON.stringify(after.mobiles), JSON.stringify(after.emails), after.note,
+          keys.company_n, keys.name_n, keys.reading_n, keys.department_n, keys.phones_digits, keys.emails_n, keys.title_n, keys.note_n,
+          confirming ? 1 : 0,
+          prev ? (prev.person_id ?? prev.id) : null, prev ? prev.id : null,
+          user.id, now, isEdit ? 1 : 0,
+          row.id, body.version,
+        ),
+      db.prepare(GUARD_SQL),
+      ...contactStatements(db, row.id, sk),
+    );
+    // 履歴: 確認画面で保存 = 登録、登録後の変更 = 編集、更新として登録 = 名刺の更新。読み取り結果から変わっていない確認前の保存は残さない
+    if (confirming || isEdit) {
+      const histChanges = prev
+        ? ['company', 'department', 'title']
+            .filter((f) => (prev[f] ?? '') !== after[f])
+            .map((f) => ({ field: f, before: prev[f] ?? '', after: after[f] }))
+        : changes;
+      stmts.push(
+        db
+          .prepare(`INSERT INTO card_history (id, card_id, type, actor_id, actor_name, source, changes, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+          .bind(ulid(), row.id, prev ? 'person_update' : confirming ? 'create' : 'edit', user.id, user.displayName, source, JSON.stringify(histChanges), now),
+      );
+    }
+    await runBatch(c.env, stmts);
+    return c.json(await detailCard(c.env, await loadCard(c.env, row.id)));
+  });
+
+  // ---- 同じ人 ----
+  // 保存済みの名刺を、後から同じ人につなぐ。つなぐのは相手の人に、この名刺 1 枚だけ
+  app.post('/api/cards/:id/person/link', async (c) => {
+    const body = await readJson(c);
+    const check = new Check();
+    const ofCardId = check.str(body.ofCardId, 'ofCardId', { required: true });
+    check.done();
+    const row = await loadCard(c.env, c.req.param('id'));
+    const target = await loadCard(c.env, ofCardId);
+    if (row.id === target.id) throw new ApiError(400, 'validation', '同じ名刺は選べません', { details: [{ field: 'ofCardId', message: '別の名刺を選んでください' }] });
+    if (row.status !== 'confirmed' || target.status !== 'confirmed') throw conflict('保存済みの名刺だけをつなげられます');
+    const fromPid = row.person_id ?? row.id;
+    const toPid = target.person_id ?? target.id;
+    if (fromPid === toPid) return c.json(await detailCard(c.env, row));
+    if ((await personPeers(c.env, fromPid, row.id)).length) {
+      throw conflict('この名刺は別の人ともつながっています。先に「つながりを外す」を行ってください');
+    }
+    const peers = await personPeers(c.env, toPid, row.id);
+    const me = { id: row.id, created_at: row.created_at, is_current: 1, version: row.version, status: 'confirmed' };
+    const { top, flips } = planCurrent([...peers, me]);
+    const current = top?.id === row.id;
+    const older = peers.filter((p) => p.created_at < row.created_at).sort((a, b) => (a.created_at < b.created_at ? -1 : 1)).at(-1);
+    const db = c.env.DB;
+    await runBatch(c.env, [
+      db
+        .prepare('UPDATE cards SET person_id = ?, is_current = ?, supersedes = ?, version = version + 1 WHERE id = ? AND version = ? AND deleted_at IS NULL')
+        .bind(toPid, current ? 1 : 0, older?.id ?? null, row.id, row.version),
+      db.prepare(GUARD_SQL),
+      ...flipStatements(db, flips.filter((f) => f.id !== row.id)),
+    ]);
+    return c.json(await detailCard(c.env, await loadCard(c.env, row.id)));
+  });
+
+  // 間違ってつないだものを外す。この名刺だけを新しい人にし、残った人の「現在」を一番新しい名刺に付け直す
+  app.post('/api/cards/:id/person/unlink', async (c) => {
+    const row = await loadCard(c.env, c.req.param('id'));
+    if (row.status !== 'confirmed') throw conflict('保存済みの名刺だけが対象です');
+    const peers = await personPeers(c.env, row.person_id ?? row.id, row.id);
+    if (!peers.length) return c.json(await detailCard(c.env, row));
+    const { flips } = planCurrent(peers);
+    const db = c.env.DB;
+    await runBatch(c.env, [
+      db
+        .prepare('UPDATE cards SET person_id = ?, is_current = 1, supersedes = NULL, version = version + 1 WHERE id = ? AND version = ? AND deleted_at IS NULL')
+        .bind(ulid(), row.id, row.version),
+      db.prepare(GUARD_SQL),
+      ...flipStatements(db, flips),
+    ]);
+    return c.json(await detailCard(c.env, await loadCard(c.env, row.id)));
   });
 
   // 論理削除。30 日後にログイン時の掃除で画像ごと消える。管理者だけ（cloudflare-small-design §4）。
@@ -385,12 +531,18 @@ export function cardRoutes(app) {
     const ownDraft = row.created_by === user.id && row.status !== 'confirmed';
     if (!ownDraft && user.role !== 'admin') throw new ApiError(403, 'forbidden', 'この名刺を削除する権限がありません');
     const now = nowIso();
-    await c.env.DB.batch([
+    const stmts = [
       c.env.DB.prepare('UPDATE cards SET deleted_at = ?, updated_by = ?, updated_at = ? WHERE id = ?').bind(now, user.id, now, row.id),
       c.env.DB.prepare(
         `INSERT INTO card_history (id, card_id, type, actor_id, actor_name, source, changes, at) VALUES (?, ?, 'delete', ?, ?, '', '[]', ?)`,
       ).bind(ulid(), row.id, user.id, user.displayName, now),
-    ]);
+    ];
+    // 現在の名刺を消したら、残った人の一番新しい名刺を「現在」に戻す（人の名刺が一覧から消えないように）
+    if (row.status === 'confirmed' && row.is_current !== 0) {
+      const { flips } = planCurrent(await personPeers(c.env, row.person_id ?? row.id, row.id));
+      stmts.push(...flipStatements(c.env.DB, flips));
+    }
+    await runBatch(c.env, stmts, 'ほかの人が先に更新しました。もう一度お試しください');
     await audit(c.env, user.id, 'card.delete', { cardId: row.id });
     return c.json({ ok: true });
   });

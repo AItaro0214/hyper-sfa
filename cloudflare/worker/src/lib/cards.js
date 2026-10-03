@@ -93,6 +93,10 @@ export function rowToCard(row, { detail = false } = {}) {
     scanCount: row.scan_count,
     version: row.version,
     failure: safeJson(row.failure, null),
+    // 人の単位（design §5.5b）。移行前の行は person_id が無いので、名刺 ID を人 ID と見なす
+    personId: row.person_id ?? row.id,
+    isCurrent: row.is_current !== 0,
+    supersedes: row.supersedes ?? null,
   };
   if (detail) card.rawText = row.raw_text;
   return card;
@@ -107,16 +111,4 @@ export function diffCards(before, after) {
     if (!same(before[field], after[field])) changes.push({ field, before: before[field], after: after[field] });
   }
   return changes;
-}
-
-// 重複の知らせ。メールが 1 つでも同じ、または会社名と氏名が同じ
-export function classifyDuplicates(card, candidates) {
-  const mine = new Set((card.emailsN ?? []).filter(Boolean));
-  const out = [];
-  for (const c of candidates) {
-    const theirs = (c.emails_n || '').split(' ').filter(Boolean);
-    if (theirs.some((e) => mine.has(e))) out.push({ id: c.id, company: c.company, name: c.name, reason: 'email' });
-    else out.push({ id: c.id, company: c.company, name: c.name, reason: 'company_name' });
-  }
-  return out;
 }

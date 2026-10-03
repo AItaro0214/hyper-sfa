@@ -18,6 +18,8 @@ const padSeq = (n, w) => (typeof n === 'number' ? String(n).padStart(w, '0') : S
 export const K = {
   card: (id) => ({ pk: `CARD#${id}`, sk: 'META' }),
   cardHist: (id, at, seq) => ({ pk: `CARD#${id}`, sk: `HIST#${at}#${padSeq(seq, 4)}` }),
+  /** 人 → 名刺。人ごとの名刺の一覧を Query 1 回で引く（design §5.5b）。 */
+  personCard: (personId, cardId) => ({ pk: `PERSON#${personId}`, sk: `CARD#${cardId}` }),
   user: (email) => ({ pk: 'ORG', sk: `USER#${lower(email)}` }),
   dept: (id) => ({ pk: 'ORG', sk: `DEPT#${id}` }),
   position: (name) => ({ pk: 'ORG', sk: `POSITION#${name}` }),

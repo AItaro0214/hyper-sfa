@@ -1,14 +1,18 @@
 // 名刺の API（docs/api-contract.md §4、docs/design.md §4、§8、§9）。
 import { canEditCard, canDeleteCard, ulid, searchKeys, truncate, groupByCompany } from '@hyper-sfa/core';
 import {
-  ddb, K, s3, invokeAsync, audit, isConditionFailed,
+  ddb, K, s3, invokeAsync, audit, isConditionFailed, HttpError,
   forbidden, conflict, validation, readJson, parseLimit, encodeCursor, decodeCursor,
 } from '@hyper-sfa/aws-shared';
-import { loadCard } from './access.js';
+import { loadCard, isConfirmed } from './access.js';
 import { presentCard } from './present.js';
 import { departmentMap, deptRefs } from './org.js';
 import { consumeScan } from './rate.js';
 import { listMinutesByIds } from './minutes.js';
+import {
+  idOf, personIdOf, otherCards, personOf, withTitles, gsi1For, versionCondition,
+  reassignCurrent, registerPersonRoutes,
+} from './person.js';
 
 const KEY_RE = /^cards\/([0-9A-Za-z]{26})\/(front|back|thumb)\.jpg$/;
 const EDIT_FIELDS = ['company', 'department', 'title', 'name', 'nameReading', 'phones', 'mobiles', 'emails', 'note', 'deptIds'];
@@ -185,10 +189,10 @@ export function registerCardRoutes(app, { index }) {
   app.get('/api/cards/:id/status', async (c) => {
     const user = me(c);
     const item = await loadCard(user, c.req.param('id'));
-    const out = { status: item.status };
-    if (item.status === 'review' || item.status === 'confirmed') {
-      const duplicates = item.status === 'review' ? await index.findDuplicates(user, item) : undefined;
-      out.card = await presentCard(item, { detail: true, duplicates });
+    const out = { status: item.status === 'superseded' ? 'confirmed' : item.status };
+    if (item.status === 'review' || isConfirmed(item.status)) {
+      const matches = item.status === 'review' ? await withTitles(await index.findMatches(user, item)) : undefined;
+      out.card = await presentCard(item, { detail: true, matches, person: await personOf(user, item) });
     }
     if (item.status === 'failed' && item.failure) {
       out.failure = { kind: item.failure.kind, message: item.failure.message ?? '', retryable: item.failure.retryable !== false };
@@ -203,6 +207,8 @@ export function registerCardRoutes(app, { index }) {
     const mine = item.createdBy === user.id && (item.status === 'review' || item.status === 'failed');
     if (!mine && !canEditCard(user, item)) throw forbidden();
     if (item.status === 'processing') return c.json({ status: 'processing' }, 202);
+    // 過去の名刺は検索の索引に載せない。読み取りの完了が索引のキーを書き戻してしまうので、読み取り直しは現在の名刺だけ
+    if (item.isCurrent === false) throw conflict('過去の名刺は読み取り直せません。最新の名刺を開いてください');
 
     await consumeScan(user.id);
     const at = nowIso();
@@ -255,8 +261,11 @@ export function registerCardRoutes(app, { index }) {
   app.get('/api/cards/:id', async (c) => {
     const user = me(c);
     const item = await loadCard(user, c.req.param('id'));
-    const duplicates = item.status === 'review' ? await index.findDuplicates(user, item) : undefined;
-    return c.json(await presentCard(item, { detail: true, duplicates }));
+    const [matches, person] = await Promise.all([
+      item.status === 'review' ? index.findMatches(user, item).then(withTitles) : undefined,
+      personOf(user, item),
+    ]);
+    return c.json(await presentCard(item, { detail: true, matches, person }));
   });
 
   // 画像の縮小。ブラウザが縮小して、既存のキーに上書きする（サーバーは画像を触らない）
@@ -326,60 +335,143 @@ export function registerCardRoutes(app, { index }) {
       // 担当部署は部署名で残す（後で部署の名前が変わっても、当時の名前で読める）
       changes.push(f === 'deptIds' ? { field: f, before: nameOf(item[f]), after: nameOf(next[f]) } : { field: f, before: item[f] ?? '', after: next[f] });
     }
-    if (changes.length === 0 && !confirm) return c.json(await presentCard(item, { detail: true }));
+    if (changes.length === 0 && !confirm) return c.json(await presentCard(item, { detail: true, person: await personOf(user, item) }));
+
+    // 同じ人の判定は、確認して保存するときだけ（design §5.5b）
+    let prev = null;
+    if (confirm) {
+      const action = body.personAction;
+      if (action != null && action.kind !== 'update' && action.kind !== 'separate') {
+        throw validation('personAction が正しくありません', [{ field: 'personAction', message: 'update か separate を指定してください' }]);
+      }
+      if (action?.kind === 'update') {
+        // 前の名刺を過去にする書き込みを伴うので、編集できる人だけ
+        if (!user.capabilities?.editCards) throw forbidden('名刺を更新として登録する権限がありません');
+        if (!action.ofCardId || typeof action.ofCardId !== 'string' || action.ofCardId === item.id) {
+          throw validation('ofCardId が正しくありません', [{ field: 'personAction', message: '前の名刺を指定してください' }]);
+        }
+        prev = await loadCard(user, action.ofCardId);
+        if (!canEditCard(user, prev)) throw forbidden('この名刺を編集する権限がありません');
+        if (prev.status !== 'confirmed' || prev.isCurrent === false) {
+          throw conflict('その名刺はすでに更新されています。最新の内容を読み込み直してください');
+        }
+      } else if (!action) {
+        const matches = await withTitles(await index.findMatches(user, { ...item, ...next }));
+        if (matches.some((m) => m.kind === 'same_person')) {
+          throw new HttpError(400, 'validation', '同じ人の名刺があります。更新として登録するか、別の人として登録するかを選んでください', {
+            code: 'person_choice_required',
+            matches,
+          });
+        }
+      }
+    }
 
     const at = nowIso();
-    const type = confirm ? 'create' : 'edit';
+    const type = confirm ? (prev ? 'person_update' : 'create') : 'edit';
     const set = {
       ...next,
       keys: searchKeys(next),
       updatedAt: at,
       updatedBy: user.id,
       updatedByName: user.displayName,
-      ...K.gsi1(item.id, at),
+      ...gsi1For(item, at),
     };
     if (confirm) {
       set.status = 'confirmed';
       set.failure = null;
+      set.personId = prev ? personIdOf(prev) : item.personId ?? item.id;
+      set.isCurrent = true;
+      if (prev) set.supersedes = idOf(prev);
     }
-    const hist = await histItem({ id: item.id, type, at, user, source, changes, card: { ...next } });
+    let histChanges = changes;
+    const ops = [];
+    let peers = null;
+    if (prev) {
+      // 履歴には、前の名刺から変わった所属・役職・会社を残す（「営業部 課長 → 営業本部 部長」）
+      histChanges = ['company', 'department', 'title']
+        .filter((f) => (prev[f] ?? '') !== next[f])
+        .map((f) => ({ field: f, before: prev[f] ?? '', after: next[f] }));
+      peers = await otherCards(personIdOf(prev), idOf(prev));
+    }
+    const hist = await histItem({ id: item.id, type, at, user, source, changes: histChanges, card: { ...next } });
+    ops.push({
+      update: { pk: item.pk, sk: item.sk },
+      set,
+      add: { version: 1, editCount: type === 'edit' ? 1 : 0 },
+      condition: '#ver = :ver AND attribute_not_exists(deletedAt)',
+      names: { '#ver': 'version' },
+      values: { ':ver': item.version ?? 1 },
+    });
+    if (prev) {
+      const pid = personIdOf(prev);
+      // 前の名刺は過去にする。version を条件にして、同時の更新は片方だけ通す
+      ops.push({
+        update: { pk: prev.pk, sk: prev.sk },
+        // gsi1 のキーは残し、status を superseded にして updatedAt を進める。ほかの warm な Lambda が差分で受け取り、索引から落とす
+        set: { isCurrent: false, status: 'superseded', supersededBy: item.id, updatedAt: at, ...K.gsi1(prev.id, at) },
+        add: { version: 1 },
+        ...versionCondition(prev),
+        condition: `${versionCondition(prev).condition} AND (attribute_not_exists(isCurrent) OR isCurrent = :cur)`,
+        values: { ':ver': prev.version ?? 1, ':cur': true },
+      });
+      ops.push({ put: { ...K.personCard(pid, item.id), createdAt: item.createdAt, isCurrent: true } });
+      ops.push({ put: { ...K.personCard(pid, idOf(prev)), createdAt: prev.createdAt, isCurrent: false } });
+    }
+    ops.push({ put: hist });
     try {
-      await ddb.transact([
-        {
-          update: { pk: item.pk, sk: item.sk },
-          set,
-          add: { version: 1, editCount: type === 'edit' ? 1 : 0 },
-          condition: '#ver = :ver AND attribute_not_exists(deletedAt)',
-          names: { '#ver': 'version' },
-          values: { ':ver': item.version ?? 1 },
-        },
-        { put: hist },
-      ]);
+      await ddb.transact(ops);
     } catch (e) {
       if (isConditionFailed(e)) throw conflict('ほかの人が先に更新しました。最新の内容を読み込み直してください');
       throw e;
     }
-    const updated = await ddb.get(item.pk, item.sk);
+    // 書いた内容から応答を作る（読み直さない）
+    const updated = {
+      ...item,
+      ...set,
+      version: (item.version ?? 1) + 1,
+      editCount: (item.editCount ?? 0) + (type === 'edit' ? 1 : 0),
+    };
     index.put(updated);
-    return c.json(await presentCard(updated, { detail: true }));
+    let known;
+    if (prev) {
+      const prevAfter = { ...prev, isCurrent: false, status: 'superseded', supersededBy: item.id, updatedAt: at, version: (prev.version ?? 1) + 1 };
+      index.put(prevAfter);
+      known = [...peers, prevAfter];
+    }
+    return c.json(await presentCard(updated, { detail: true, person: await personOf(user, updated, { known }) }));
   });
 
   app.delete('/api/cards/:id', async (c) => {
     const user = me(c);
     const item = await loadCard(user, c.req.param('id'));
     // 保存前の名刺は、読み込んだ本人なら消せる。保存後は開発者だけ（§9.3）
-    const ownDraft = item.createdBy === user.id && item.status !== 'confirmed';
+    const ownDraft = item.createdBy === user.id && !isConfirmed(item.status);
     if (!ownDraft && !canDeleteCard(user, item)) throw forbidden('この名刺を削除する権限がありません');
     const at = nowIso();
     const hist = await histItem({ id: item.id, type: 'delete', at, user, source: null, changes: [], card: item });
-    await ddb.transact([
+    const ops = [
       {
         update: { pk: item.pk, sk: item.sk },
-        set: { deletedAt: at, updatedAt: at, updatedBy: user.id, updatedByName: user.displayName, ...K.gsi1(item.id, at) },
+        set: { deletedAt: at, updatedAt: at, updatedBy: user.id, updatedByName: user.displayName, ...gsi1For(item, at) },
         add: { version: 1 },
       },
       { put: hist },
-    ]);
+    ];
+    // 現在の名刺を消したら、残った人の一番新しい名刺を「現在」に戻す（人の名刺が一覧から消えないように）
+    let promoted = [];
+    if (isConfirmed(item.status) && item.isCurrent !== false) {
+      const peers = await otherCards(personIdOf(item), idOf(item));
+      const r = reassignCurrent(peers.filter((p) => isConfirmed(p.status)), at);
+      ops.push(...r.ops);
+      promoted = r.after;
+    }
+    try {
+      await ddb.transact(ops);
+    } catch (e) {
+      if (isConditionFailed(e)) throw conflict('ほかの人が先に更新しました。もう一度お試しください');
+      throw e;
+    }
+    for (const p of promoted) index.put(p);
     index.put({ ...item, deletedAt: at, updatedAt: at });
     await audit(user, 'card.delete', { cardId: item.id });
     return c.json({ ok: true });
@@ -389,8 +481,14 @@ export function registerCardRoutes(app, { index }) {
   app.get('/api/cards/:id/minutes', async (c) => {
     const user = me(c);
     const card = await loadCard(user, c.req.param('id'));
-    const links = await ddb.queryAll({ pk: card.pk, skPrefix: 'MIN#', forward: false });
-    const items = await listMinutesByIds(user, links.map((l) => String(l.sk).slice('MIN#'.length)));
+    // 人の名刺すべて（過去の名刺を含む）に紐づく議事録。Query は名刺ごとに並べて引く
+    const ids = [idOf(card), ...(isConfirmed(card.status) ? (await otherCards(personIdOf(card), idOf(card))).map(idOf) : [])];
+    const lists = await Promise.all(ids.map((id) => ddb.queryAll({ pk: `CARD#${id}`, skPrefix: 'MIN#', forward: false })));
+    // 同じ議事録が複数の名刺に付いていても 1 件にする。キーは MIN#<開催日時>#<ID> なので、文字列の降順が新しい順
+    const keys = [...new Set(lists.flat().map((l) => String(l.sk).slice('MIN#'.length)))].sort().reverse();
+    const items = await listMinutesByIds(user, keys);
     return c.json({ items, nextCursor: null });
   });
+
+  registerPersonRoutes(app, { index });
 }

@@ -66,6 +66,24 @@ test('deletedAt のある名刺は一覧から外れる', async () => {
   assert.equal((await idx.search({ user: user('org_admin', []), params: {} })).total, 0);
 });
 
+test('status が superseded の名刺は、起動時の読み込みでも差分でも索引と引き表から落ちる', async () => {
+  const db = fakeDdb();
+  db.upsert(card('01A', { emails: ['x@example.jp'] }));
+  db.upsert(card('01B', { name: '山田', status: 'superseded', emails: ['x@example.jp'], isCurrent: false }));
+  let t = Date.parse('2026-10-02T00:00:00.000Z');
+  const idx = createSearchIndex({ ddb: db, now: () => t });
+  await idx.ensureFresh();
+  assert.deepEqual([...idx._map.keys()], ['01A'], '起動時の全件読み込みでも落とす');
+  // 現在の名刺が、あとから過去になった（gsi1 のキーは残り、status と updatedAt だけ変わる）
+  t += 60_000;
+  db.upsert(card('01A', { emails: ['x@example.jp'], status: 'superseded', isCurrent: false, updatedAt: '2026-10-02T00:00:30.000Z' }));
+  await idx.ensureFresh();
+  assert.equal(idx.size(), 0);
+  const tables = Object.values(idx._tables);
+  assert.ok(tables.every((m) => m.size === 0), '引き表からも外れる');
+  assert.equal((await idx.search({ user: user('org_admin', []), params: {} })).total, 0);
+});
+
 test('見える範囲: 部署が重なる名刺だけが出て、件数にも数えない', async () => {
   const db = fakeDdb();
   db.upsert(card('01A', { deptIds: ['d1'] }));
@@ -122,13 +140,13 @@ test('条件は AND、ページ送りは最後の位置の次から続く', asyn
   assert.equal(p3.nextCursor, null);
 });
 
-test('重複の知らせは、見える範囲の名刺だけを対象にする', async () => {
+test('同じ人の知らせは、見える範囲の名刺だけを対象にする', async () => {
   const db = fakeDdb();
   db.upsert(card('01A', { emails: ['x@example.jp'], deptIds: ['d2'] })); // 見えない部署
   db.upsert(card('01B', { emails: ['x@example.jp'], deptIds: ['d1'] }));
   const idx = createSearchIndex({ ddb: db });
   const mine = card('01N', { status: 'review', emails: ['X@example.jp'], deptIds: ['d1'] });
-  const dups = await idx.findDuplicates(user('dept_edit', ['d1']), mine);
+  const dups = await idx.findMatches(user('dept_edit', ['d1']), mine);
   assert.deepEqual(dups.map((d) => d.id), ['01B']);
-  assert.equal(dups[0].reason, 'email');
+  assert.deepEqual([dups[0].kind, dups[0].reason], ['same_person', 'email']);
 });

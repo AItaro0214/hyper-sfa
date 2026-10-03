@@ -64,13 +64,22 @@ async function listMinutes(c, extra = {}) {
       throw validationError(`${k} は YYYY-MM-DD で指定してください`, [{ field: k, message: 'YYYY-MM-DD で指定してください' }]);
     }
   }
+  // 名刺で絞るときは、その人の名刺すべて（過去の名刺を含む）に紐づく議事録をまとめる
+  const { cardId: extraCardId, ...rest } = extra;
+  const cardId = extraCardId ?? q.cardId;
+  let personId = null;
+  if (cardId) {
+    const r = await c.env.DB.prepare('SELECT person_id FROM cards WHERE id = ?').bind(cardId).first();
+    personId = r?.person_id ?? null;
+  }
   const { sql, params, limit } = buildListQuery({
     userId: user.id,
     relation: q.relation,
     company: q.company,
     department: q.department,
     name: q.name,
-    cardId: q.cardId,
+    cardId: personId ? undefined : cardId,
+    personId,
     attendee: q.attendee,
     from: q.from,
     to: q.to,
@@ -79,7 +88,7 @@ async function listMinutes(c, extra = {}) {
     cursor: q.cursor,
     limit: q.limit,
     normalize: normalizeText,
-    ...extra,
+    ...rest,
   });
   const rows = (await c.env.DB.prepare(sql).bind(...params).all()).results ?? [];
   const page = rows.slice(0, limit);

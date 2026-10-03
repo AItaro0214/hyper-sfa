@@ -4,6 +4,12 @@
 import { canSeeCard } from '@hyper-sfa/core';
 import { ddb, K, notFound } from '@hyper-sfa/aws-shared';
 
+/**
+ * 確認済みか。'superseded' は同じ人の新しい名刺に置き換えられた「確認済みの過去の名刺」で、
+ * gsi1 に残したまま status だけ変える（warm な Lambda の索引にも差分で伝わり、落とせるため。design §5.5b）。
+ */
+export const isConfirmed = (status) => status === 'confirmed' || status === 'superseded';
+
 /** 読み取り中・失敗は本人と、編集できて見える範囲の人だけ。それ以外は担当部署で決まる。 */
 export function canSeeItem(user, item) {
   if (!item || item.deletedAt) return false;
@@ -28,7 +34,7 @@ export async function visibleCardIds(user, ids) {
   const items = await ddb.batchGet(uniq.map((id) => K.card(id)));
   const out = new Set();
   for (const it of items) {
-    if ((it.status === 'review' || it.status === 'confirmed') && canSeeItem(user, it)) out.add(String(it.pk).slice('CARD#'.length));
+    if ((it.status === 'review' || isConfirmed(it.status)) && canSeeItem(user, it)) out.add(String(it.pk).slice('CARD#'.length));
   }
   return out;
 }

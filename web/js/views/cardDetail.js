@@ -5,6 +5,7 @@ import { esc, toast, confirmDialog, formatDate, formatDateTime, errorMessage } f
 import { navigate } from '../router.js';
 import { icon } from '../icons.js';
 import { optimizeCardImages } from '../imageUtil.js';
+import { pickCard } from './minutes/pickers.js';
 import { STATUS_LABEL, mountCardForm, cardViewHtml, bindZoom } from './cardEdit.js';
 
 const MINUTES_STATUS = { recording: '録音中', uploaded: 'アップロード済み', queued: '待機中', transcribing: '文字起こし中', summarizing: '議事録作成中', done: '完了', failed: '失敗' };
@@ -34,7 +35,10 @@ export async function renderCardDetail(container, { id }) {
   function show(card) {
     const canEdit = !!caps.editCards;
     const canRescan = canEdit || (card.status !== 'confirmed' && card.createdBy && card.createdBy.id === state.me.id);
+    const past = card.isCurrent === false;
+    const currentOfPerson = past ? ((card.person && card.person.cards) || []).find((x) => x.isCurrent) : null;
     root.innerHTML = `<a class="back" href="/">${icon('back', 18)}名刺を探す</a>
+      ${past ? `<p class="alert alert-warn old-card" role="status"><strong>この名刺は古いものです。</strong>${currentOfPerson ? ` <a href="/cards/${encodeURIComponent(currentOfPerson.id)}">現在の名刺はこちら</a>` : ''}</p>` : ''}
       <h1>${esc(card.name) || '名刺'} <span class="muted" style="font-weight:400;font-size:1rem">${esc(card.company)}</span>
         ${card.status !== 'confirmed' ? `<span class="badge badge-${esc(card.status)}">${esc(STATUS_LABEL[card.status] || card.status)}</span>` : ''}</h1>
       <p class="muted">登録: ${esc(card.createdBy && card.createdBy.name)} ${esc(formatDate(card.createdAt))} ／ 最終編集: ${esc(card.updatedBy ? card.updatedBy.name : '-')} ${esc(formatDate(card.updatedAt))}</p>
@@ -46,7 +50,8 @@ export async function renderCardDetail(container, { id }) {
         ${canDelete(card) ? `<button type="button" class="btn btn-danger" data-del>${icon('trash', 18)}削除</button>` : ''}
       </div>
       ${canRescan ? `<p class="muted" data-shrunk-note ${card.imageOptimized ? '' : 'hidden'}>縮小した画像で読み取るため、精度が落ちることがあります</p>` : ''}
-      ${state.config.features.minutes ? `<section><h2>${icon('mic', 18)} この人との議事録</h2><div data-minutes><div class="skel" style="height:44px"></div></div></section>` : ''}
+      ${card.status === 'confirmed' ? personSection(card, canEdit) : ''}
+      ${state.config.features.minutes ? `<section><h2>${icon('mic', 18)} この人との議事録</h2><p class="muted">過去の名刺に紐づいた議事録も含みます。</p><div data-minutes><div class="skel" style="height:44px"></div></div></section>` : ''}
       ${caps.viewHistory ? `<section><h2>${icon('history', 18)} 変更履歴</h2><div data-history><div class="skel" style="height:44px"></div></div></section>` : ''}`;
     bindZoom(root);
     const body = root.querySelector('[data-body]');
@@ -71,8 +76,35 @@ export async function renderCardDetail(container, { id }) {
     if (canEdit && card.status === 'confirmed' && !card.imageOptimized) {
       optimizeCardImages(card).then((ok) => { if (ok && !stopped) root.querySelector('[data-shrunk-note]')?.removeAttribute('hidden'); });
     }
+    root.querySelector('[data-link]')?.addEventListener('click', async () => {
+      const c = await pickCard({ title: '同じ人の名刺を選ぶ', manual: false });
+      if (!c || !c.cardId) return;
+      if (c.cardId === card.id) { toast('同じ名刺です', 'error'); return; }
+      try { await api.post(`${path}/person/link`, { ofCardId: c.cardId }); toast('同じ人としてつなぎました', 'success'); load(); } catch (e) { toast(errorMessage(e), 'error'); }
+    });
+    root.querySelectorAll('[data-unlink]').forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmDialog('この名刺を、この人から外して別の人にしますか？', { okLabel: '外す', danger: true }))) return;
+      try { await api.post(`/api/cards/${encodeURIComponent(b.dataset.unlink)}/person/unlink`); toast('つながりを外しました', 'success'); load(); } catch (e) { toast(errorMessage(e), 'error'); }
+    }));
     loadMinutes();
     loadHistory();
+  }
+
+  // 同じ人の名刺の変遷。古い順。表示中の名刺以外は押すとその詳細へ
+  function personSection(card, canEdit) {
+    const list = (card.person && card.person.cards) || [];
+    if (list.length < 2 && !canEdit) return '';
+    const rows = list.map((p) => {
+      const here = p.id === card.id;
+      const body = `<span class="pc-main"><strong>${esc(p.company) || '-'}</strong> <span>${esc(p.department)}</span> <span>${esc(p.title)}</span></span><span class="pc-date muted">${esc(formatDate(p.createdAt))}</span>`;
+      return `<li class="pc-row${here ? ' here' : ''}${p.isCurrent ? ' current' : ''}">
+        ${here ? `<div class="pc-link" aria-current="true">${body}</div>` : `<a class="pc-link" href="/cards/${encodeURIComponent(p.id)}">${body}</a>`}
+        <span class="pc-tags">${p.isCurrent ? '<span class="badge badge-current">現在</span>' : ''}${here && !p.isCurrent ? '<span class="badge">表示中</span>' : ''}</span>
+        ${canEdit && list.length > 1 ? `<button type="button" class="btn btn-small" data-unlink="${esc(p.id)}">つながりを外す</button>` : ''}</li>`;
+    });
+    return `<section class="person-cards"><h2>${icon('history', 18)} この人の名刺の変遷</h2>
+      ${list.length > 1 ? `<ol class="pc-list">${rows.join('')}</ol>` : '<p class="muted">この人の名刺はこの 1 枚だけです。</p>'}
+      ${canEdit ? '<div class="actions"><button type="button" class="btn" data-link>同じ人としてつなぐ</button></div>' : ''}</section>`;
   }
 
   async function poll() {

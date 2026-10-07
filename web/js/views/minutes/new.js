@@ -196,8 +196,9 @@ function paintRecording(view) {
     <div data-r="alerts"></div>
     <div class="mn-meters">
       ${isWeb ? '<div class="mn-meter"><span>パソコンの音</span><div class="mn-bar"><i data-r="m-system"></i></div></div>' : ''}
-      <div class="mn-meter"><span>マイク</span><div class="mn-bar"><i data-r="m-mic"></i></div></div>
+      <div class="mn-meter" data-r="mic-meter"><span data-r="mic-label">マイク</span><div class="mn-bar"><i data-r="m-mic"></i></div></div>
     </div>
+    ${isWeb ? `<button type="button" class="mn-btn mn-btn-lg mn-mic-toggle" data-mic aria-pressed="false">${icon('mic', 20)}<span data-r="mic-text">マイクをオフにする</span></button>` : ''}
     <div class="mn-muted" data-r="saved"></div>
     <div class="mn-rec-btns">
       <button class="mn-btn mn-btn-lg" data-pause>一時停止</button>
@@ -215,6 +216,18 @@ function paintRecording(view) {
   q('[data-f=memo]').addEventListener('input', (e) => { s.model.memo = e.target.value; s.save(); });
   mountPeopleEditor(q('[data-r=people]'), s.model, { onChange: () => s.save() });
 
+  // ウェブ会議だけ: 録音を止めずにマイクだけを切る（相手の声＝パソコンの音は録り続ける）
+  q('[data-mic]')?.addEventListener('click', () => {
+    const cap = s.capture;
+    if (!cap.setMicMuted) return;
+    cap.setMicMuted(!cap.micMuted);
+    s.flags.micMuted = cap.micMuted;
+    s.flags.talkingWhileMuted = false;
+    s.mutedTalk = 0;
+    paintMic(view);
+    refreshAlerts();
+  });
+  paintMic(view);
   q('[data-pause]').addEventListener('click', async () => {
     const seg = s.segmenter;
     if (seg.state === 'recording') await seg.pause();
@@ -228,6 +241,7 @@ function paintRecording(view) {
   q('[data-r=alerts]').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-act]');
     if (!b) return;
+    if (b.dataset.act === 'unmute') { v_unmute(); return; }
     if (b.dataset.act === 'mic-only') { s.flags.shareEnded = false; s.flags.micOnly = true; refreshAlerts(); }
     else if (b.dataset.act === 'finish') doFinish();
     else if (b.dataset.act === 'resume') {
@@ -235,10 +249,27 @@ function paintRecording(view) {
       updateLive(); refreshAlerts();
     }
   });
+  function v_unmute() { if (s.capture.micMuted) q('[data-mic]')?.click(); }
   view.alertSig = null;
   refreshAlerts();
   updateLive();
   meterLoop(view);
+}
+
+// マイクのボタンとメーターの見た目（ミュート中は赤く、メーターを薄く）
+function paintMic(view) {
+  const s = session;
+  if (!s || !alive(view)) return;
+  const muted = !!(s.capture && s.capture.micMuted);
+  const btn = view.container.querySelector('[data-mic]');
+  if (btn) {
+    btn.classList.toggle('muted', muted);
+    btn.setAttribute('aria-pressed', String(muted));
+    btn.querySelector('[data-r=mic-text]').textContent = muted ? 'マイクをオンにする（いまミュート中）' : 'マイクをオフにする';
+  }
+  view.container.querySelector('[data-r=mic-meter]')?.classList.toggle('muted', muted);
+  const label = view.container.querySelector('[data-r=mic-label]');
+  if (label) label.textContent = muted ? 'マイク（ミュート中）' : 'マイク';
 }
 
 // 時間・保存済み・ボタンの文言だけを更新する
@@ -266,7 +297,7 @@ function refreshAlerts() {
   const v = s && s.view;
   if (!s || !alive(v) || s.phase !== 'recording') return;
   const f = s.flags;
-  const sig = JSON.stringify([f.shareEnded, f.micOnly, f.interrupted, f.micEnded, f.nearLimit, f.uploadFailing, f.silentSystem, f.silentMic]);
+  const sig = JSON.stringify([f.shareEnded, f.micOnly, f.interrupted, f.micEnded, f.nearLimit, f.uploadFailing, f.silentSystem, f.silentMic, f.micMuted, f.talkingWhileMuted]);
   if (sig === v.alertSig) return; // 変わっていなければ触らない
   v.alertSig = sig;
   const box = v.container.querySelector('[data-r=alerts]');
@@ -278,7 +309,11 @@ function refreshAlerts() {
   if (f.nearLimit) items.push('<div class="mn-alert mn-alert-warn">あと 10 分で録音を終えます。</div>');
   if (f.uploadFailing) items.push('<div class="mn-alert">保存の送信がうまくいっていません。録音は続けています。つながったら自動でまとめて送ります。</div>');
   if (f.silentSystem && !f.shareEnded && !f.micOnly) items.push('<div class="mn-alert mn-alert-warn">パソコンの音が入っていません。共有したタブで音が出ているか確かめてください。</div>');
-  if (f.silentMic) items.push('<div class="mn-alert mn-alert-warn">マイクの音が入っていません。ミュートになっていないか確かめてください。</div>');
+  if (f.micMuted) {
+    items.push(f.talkingWhileMuted
+      ? '<div class="mn-alert mn-alert-warn"><p><strong>マイクがミュート中です。</strong>いま話している声は録音されていません。</p><button class="mn-btn mn-btn-primary" data-act="unmute">マイクをオンにする</button></div>'
+      : '<div class="mn-alert">マイクをミュートしています。相手の声（パソコンの音）は録音しています。</div>');
+  } else if (f.silentMic) items.push('<div class="mn-alert mn-alert-warn">マイクの音が入っていません。ミュートになっていないか確かめてください。</div>');
   box.innerHTML = items.join('');
 }
 
@@ -305,6 +340,13 @@ function meterLoop(view) {
       const silent = now - s.lastSound[ch] > 30000;
       const key = ch === 'system' ? 'silentSystem' : 'silentMic';
       if (!!s.flags[key] !== silent) { s.flags[key] = silent; refreshAlerts(); }
+      // ミュート中に話していたら知らせる（オンにし忘れて話すのを防ぐ）。話し声は途切れ途切れなので、
+      // 「声が出ているコマの割合」をならした値（約 1 秒で追いつく）が半分を超えたら話していると見なす
+      if (ch === 'mic' && s.capture.micMuted) {
+        const k = 1 - Math.exp(-1 / 60);
+        s.mutedTalk = (s.mutedTalk || 0) + ((rec && lv > 0.04 ? 1 : 0) - (s.mutedTalk || 0)) * k;
+        if (s.mutedTalk > 0.5 && !s.flags.talkingWhileMuted) { s.flags.talkingWhileMuted = true; refreshAlerts(); }
+      }
     }
     view.raf = requestAnimationFrame(step);
   };

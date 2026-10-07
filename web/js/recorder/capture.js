@@ -135,7 +135,12 @@ export async function startWebMeeting({ onShareEnded, onMicEnded } = {}) {
   const sysSource = ctx.createMediaStreamSource(new MediaStream(sysTracks));
   const micSource = ctx.createMediaStreamSource(mic);
   sysSource.connect(dest);
-  micSource.connect(dest);
+  // マイクは音量（gain）を挟んで録音に混ぜる。ミュートは gain を 0 にするだけで、録音もパソコンの音も止めない。
+  // メーター（analyser）はマイクの生の音を見るので、ミュート中に話していることも分かる
+  const micGain = ctx.createGain();
+  micSource.connect(micGain);
+  micGain.connect(dest);
+  let micMuted = false;
   const analysers = { system: makeAnalyser(ctx, sysSource), mic: makeAnalyser(ctx, micSource) };
 
   let shareEnded = false;
@@ -157,6 +162,12 @@ export async function startWebMeeting({ onShareEnded, onMicEnded } = {}) {
     // 映像トラックはここで保持する（止めると共有が終わるため）
     _display: display,
     get shareEnded() { return shareEnded; },
+    get micMuted() { return micMuted; },
+    // 切り替えの瞬間に「プツッ」と鳴らないよう、15ms かけて音量を変える
+    setMicMuted(on) {
+      micMuted = !!on;
+      micGain.gain.setTargetAtTime(micMuted ? 0 : 1, ctx.currentTime, 0.015);
+    },
     async prepare() { if (ctx.state === 'suspended') await ctx.resume().catch(() => {}); },
     stop() {
       if (stopped) return;

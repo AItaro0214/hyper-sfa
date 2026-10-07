@@ -132,7 +132,7 @@
 .mn-dot.off { animation: none; background: var(--mn-muted); }
 @keyframes mn-blink { 50% { opacity: .25; } }
 .mn-meters { display: grid; gap: 12px; margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--glass); }
-.mn-meter { display: grid; grid-template-columns: 7.5em 1fr; gap: 12px; align-items: center; font-size: .85rem; color: var(--muted); }
+.mn-meter { display: grid; grid-template-columns: 9.5em 1fr; gap: 12px; align-items: center; font-size: .85rem; color: var(--muted); }
 .mn-bar { height: 8px; background: var(--glass-2); border-radius: 6px; overflow: hidden; }
 .mn-bar i { display: block; height: 100%; width: 100%; transform-origin: left; transform: scaleX(0); background: var(--grad); border-radius: 6px; box-shadow: 0 0 12px var(--glow); will-change: transform; }
 .mn-rec-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
@@ -290,3 +290,9 @@ body.mn-modal-open { overflow: hidden; }
 .msm-check .box { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: var(--on-accent); display: inline-flex; align-items: center; justify-content: center; font-size: .9rem; box-shadow: 0 0 0 4px var(--accent-soft); }
 .msm-btn { text-align: center; padding: 8px; border-radius: 10px; background: var(--accent); color: var(--on-accent); font-weight: 700; opacity: .9; }
 @media (max-width: 640px) { .mn-sysaudio-big { font-size: 1.15rem; } .mn-sysaudio-big mark { font-size: 1.25rem; } }
+
+/* ウェブ会議の録音中のマイクのオン・オフ */
+.mn-mic-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 0 0 12px; }
+.mn-mic-toggle.muted { background: var(--danger-bg); border-color: var(--danger-line); color: var(--danger); }
+.mn-meter.muted .mn-bar i { background: var(--muted); box-shadow: none; opacity: .5; }
+.mn-meter.muted span { color: var(--danger); font-weight: 700; }

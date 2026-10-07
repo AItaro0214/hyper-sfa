@@ -5,7 +5,9 @@ import { esc, toast, confirmDialog, formatDateTime, errorMessage } from '../../u
 import { prepareImages, uploadImages } from '../../imageUtil.js';
 import { settingsNav } from '../settingsNav.js';
 
-const KINDS = [['card', '名刺の読み取り'], ['transcribe', '文字起こし'], ['summarize', '議事録の作成'], ['qa', '質問']];
+const KINDS = [['card', '名刺の読み取り'], ['transcribe', '文字起こし'], ['summarize', '議事録の作成'], ['outline', '資料の目次'], ['summarize_materials', '資料を踏まえた議事録'], ['qa', '質問']];
+// 資料の 2 つは「議事録の作成」のモデルで動く。この画面からは試せない（資料を置く API が無いため）
+const MATERIAL_KINDS = ['outline', 'summarize_materials'];
 
 export async function renderDevPrompts(container, _p, query) {
   const page = document.createElement('div');
@@ -40,6 +42,12 @@ export async function renderDevPrompts(container, _p, query) {
     if (kind === 'transcribe') {
       // 契約に音声を置く API が無いため、画面からは試せない。
       box.innerHTML = '<p class="muted">文字起こしの試しは、この画面からはできません。録音した議事録で確かめてください。</p>';
+      return;
+    }
+    if (MATERIAL_KINDS.includes(kind)) {
+      box.innerHTML = kind === 'outline'
+        ? '<p class="muted">PDF の資料を、ページごとの目次（見出し・要点・図表の説明・固有名詞）にするプロンプトです。pptx / xlsx はブラウザで中身を抜くので使いません。モデルは「議事録の作成」と同じです。試しは、議事録に PDF を添付して「資料を踏まえて作り直す」で確かめてください。</p>'
+        : '<p class="muted">資料の目次と文字起こしから、資料に沿った議事録と「資料のページ ↔ 時刻」の対応表を作るプロンプトです。モデルは「議事録の作成」と同じです。試しは、議事録に資料を添付して「資料を踏まえて作り直す」で確かめてください。</p>';
       return;
     }
     box.innerHTML = kind === 'card'

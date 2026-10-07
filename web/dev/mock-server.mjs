@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_MODELS } from '../../packages/core/src/models.js';
+import { DEFAULT_PROMPTS } from '../../packages/core/src/prompts.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(here, '..');
@@ -60,8 +61,8 @@ let loggedIn = false;
 let devSettings = { keys: { gemini: { configured: true, last4: 'ab12', updatedAt: new Date().toISOString() }, openai: { configured: false } }, models: { card: 'gemini-3.5-flash-lite', transcribe: 'gemini-3.5-flash-lite', summarize: 'gemini-3.6-flash', qa: 'gemini-3.6-flash' }, prompts: {} };
 // 一覧は共通ロジックの初期値をそのまま使う（tier / status / note もそのまま出る）。無効の例を 1 件足す
 const MODELS = [...DEFAULT_MODELS.map((m) => structuredClone(m)), { id: 'custom-test', provider: 'openai', label: 'カスタム試験モデル', uses: ['summarize'], pricing: { input: 1, output: 4 }, status: 'preview', note: '手で追加したモデル', active: false, builtin: false }];
-const PROMPTS = { card: 'カード用プロンプト', transcribe: '文字起こし用 {{TITLE}}', summarize: '議事録用 {{TRANSCRIPT}}' };
-const promptVer = { card: 1, transcribe: 1, summarize: 1 };
+const PROMPTS = { ...DEFAULT_PROMPTS };
+const promptVer = Object.fromEntries(Object.keys(DEFAULT_PROMPTS).map((k) => [k, 1]));
 
 const send = (res, status, body, headers = {}) => {
   const data = body === undefined ? '' : JSON.stringify(body);
@@ -328,7 +329,7 @@ async function api(req, res, url) {
   if (p === '/api/dev/models' && m === 'POST') { MODELS.push({ ...body, builtin: false }); return send(res, 200, {}); }
   if ((g = p.match(/^\/api\/dev\/models\/([^/]+)$/)) && m === 'PATCH') { Object.assign(MODELS.find((x) => x.id === g[1]) || {}, body); return send(res, 200, {}); }
   if (p === '/api/dev/model') { devSettings.models[body.use] = body.modelId; return send(res, 200, devSettings); }
-  if ((g = p.match(/^\/api\/dev\/prompts\/(card|transcribe|summarize)(\/history|\/revert)?$/))) {
+  if ((g = p.match(/^\/api\/dev\/prompts\/(card|transcribe|summarize|qa|outline|summarize_materials)(\/history|\/revert)?$/))) {
     const k = g[1];
     if (g[2] === '/history') return send(res, 200, { items: [{ version: 1, savedBy: { name: '山田 管理' }, savedAt: new Date().toISOString(), text: PROMPTS[k] }] });
     if (g[2] === '/revert') return send(res, 200, { kind: k, text: PROMPTS[k], version: ++promptVer[k], isDefault: false });

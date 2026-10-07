@@ -89,32 +89,84 @@ export function errMessage(e, fallback = 'うまくいきませんでした。�
 }
 
 // ---- Markdown（見出し、箇条書き、番号付き、太字、段落だけ。raw HTML は出さない） ----
+// 行の中の書式。先にエスケープするので、Markdown 中の < > はそのまま文字として出る。
+// コードの中身は他の書式に巻き込まないよう、いったん置き換えてから最後に戻す
 function inline(text) {
-  // 先にエスケープするので、Markdown 中の < > はそのまま文字として出る
-  return esc(text)
+  const codes = [];
+  let s = esc(text).replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
+  s = s
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>');
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+    // 斜体は * だけ（_ は日本語の文中の記号や変数名とぶつかりやすいので使わない）
+    .replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>')
+    // リンクは http / https だけ。javascript: などは文字のまま残す
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`);
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
 }
 
+// 表の 1 行を、| で区切ったセルの配列にする（先頭と末尾の | は省略可）
+function tableCells(line) {
+  let t = line.trim();
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|') && !t.endsWith('\\|')) t = t.slice(0, -1);
+  return t.split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, '|').trim());
+}
+const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+/**
+ * 議事録・質問の答えに使う Markdown の表示。モデルが出しがちな書式だけに絞って対応する:
+ * 見出し、箇条書き（入れ子は字下げで表す）、番号付き、チェックボックス、表、引用、区切り線、
+ * コードのまとまり、太字・斜体・取り消し線・コード・リンク。HTML の直書きは文字として出す。
+ */
 export function renderMarkdown(md) {
   const lines = String(md || '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];
   let list = null; // 'ul' | 'ol'
   let para = [];
+  let quote = [];
   const flushPara = () => { if (para.length) { out.push(`<p>${para.map(inline).join('<br>')}</p>`); para = []; } };
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-  for (const raw of lines) {
-    const line = raw.replace(/\s+$/, '');
+  const flushQuote = () => { if (quote.length) { out.push(`<blockquote>${renderMarkdown(quote.join('\n'))}</blockquote>`); quote = []; } };
+  const flushAll = () => { flushPara(); closeList(); flushQuote(); };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\s+$/, '');
     let m;
+    // コードのまとまり（``` で囲む）。中は書式を解釈しない
+    if (/^\s*```/.test(line)) {
+      flushAll();
+      const body = [];
+      for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) body.push(lines[i]);
+      out.push(`<pre class="mn-pre"><code>${esc(body.join('\n'))}</code></pre>`);
+      continue;
+    }
+    if ((m = /^\s*>\s?(.*)$/.exec(line))) { flushPara(); closeList(); quote.push(m[1]); continue; }
+    flushQuote();
     if (!line.trim()) { flushPara(); closeList(); continue; }
+    // 表: 見出しの行の次が |---|---| の区切りなら表として読む
+    if (line.includes('|') && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1])) {
+      flushAll();
+      const head = tableCells(line);
+      const align = tableCells(lines[i + 1]).map((c) => (/^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : ''));
+      const rows = [];
+      for (i += 2; i < lines.length && lines[i].includes('|') && lines[i].trim(); i++) rows.push(tableCells(lines[i]));
+      i--;
+      const td = (tag, c, k) => `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ''}>${inline(c)}</${tag}>`;
+      out.push(`<div class="mn-table-wrap"><table class="mn-table"><thead><tr>${head.map((c, k) => td('th', c, k)).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${head.map((_, k) => td('td', r[k] ?? '', k)).join('')}</tr>`).join('')}</tbody></table></div>`);
+      continue;
+    }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); closeList(); out.push('<hr>'); continue; }
     if ((m = /^(#{1,6})\s+(.*)$/.exec(line))) {
       flushPara(); closeList();
       const lv = Math.min(6, m[1].length + 1); // 画面の見出し（h1）と混ざらないよう 1 段下げる
-      out.push(`<h${lv}>${inline(m[2])}</h${lv}>`);
+      out.push(`<h${lv}>${inline(m[2].replace(/\s+#+$/, ''))}</h${lv}>`);
     } else if ((m = /^(\s*)[-*・]\s+(.*)$/.exec(line))) {
       flushPara();
       if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul'; }
-      out.push(`<li class="mn-ind${Math.min(2, Math.floor(m[1].length / 2))}">${inline(m[2])}</li>`);
+      const ind = Math.min(2, Math.floor(m[1].length / 2));
+      const cb = /^\[([ xX])\]\s+(.*)$/.exec(m[2]);
+      out.push(cb
+        ? `<li class="mn-ind${ind} mn-task${cb[1] === ' ' ? '' : ' done'}"><span class="mn-check" aria-hidden="true">${cb[1] === ' ' ? '' : '✓'}</span>${inline(cb[2])}</li>`
+        : `<li class="mn-ind${ind}">${inline(m[2])}</li>`);
     } else if ((m = /^(\s*)\d+[.)]\s+(.*)$/.exec(line))) {
       flushPara();
       if (list !== 'ol') { closeList(); out.push('<ol>'); list = 'ol'; }
@@ -124,7 +176,7 @@ export function renderMarkdown(md) {
       para.push(line.trim());
     }
   }
-  flushPara(); closeList();
+  flushAll();
   return out.join('\n');
 }
 

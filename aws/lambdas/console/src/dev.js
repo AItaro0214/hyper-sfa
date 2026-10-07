@@ -11,6 +11,8 @@ import { me, listUserItems, emailOf } from './common.js';
 const { DEFAULT_MODELS, LEVELS, levelFor, normalizeText, ulid } = core;
 const PROVIDERS = ['gemini', 'openai'];
 const KINDS = ['card', 'transcribe', 'summarize', 'qa'];
+// プロンプトだけを持つ用途。資料の目次化と資料を踏まえた議事録は「議事録」のモデルを使い、プロンプトだけ別に持つ
+const PROMPT_KINDS = [...KINDS, 'outline', 'summarize_materials'];
 const PROMPT_MAX = 20_000;
 const TEST_TTL_SEC = 24 * 3600;
 
@@ -21,7 +23,7 @@ const provider = (c) => {
 };
 const kindOf = (c) => {
   const k = c.req.param('kind');
-  if (!KINDS.includes(k)) throw notFound('用途が見つかりません');
+  if (!PROMPT_KINDS.includes(k)) throw notFound('用途が見つかりません');
   return k;
 };
 

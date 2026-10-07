@@ -174,7 +174,7 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 | `POST /api/dev/models` | 追加（同じ形）。`PATCH /api/dev/models/{id}` で変更・有効 / 無効 |
 | `GET /api/dev/models/available?provider=gemini` | 登録済みのキーで使えるモデル ID の一覧 `{ "items": ["gemini-3.8-flash", ...] }` |
 | `PUT /api/dev/model` | `{ "use": "card" | "transcribe" | "summarize", "modelId" }` |
-| `GET /api/dev/prompts/{kind}` | `{ "kind", "text", "version", "savedBy", "savedAt", "isDefault" }`。`kind` は `card` / `transcribe` / `summarize` |
+| `GET /api/dev/prompts/{kind}` | `{ "kind", "text", "version", "savedBy", "savedAt", "isDefault" }`。`kind` は `card` / `transcribe` / `summarize` / `qa` / `outline`（資料の目次）/ `summarize_materials`（資料を踏まえた議事録）。後ろの 2 つは「議事録」のモデルで動き、プロンプトだけを別に持つ |
 | `PUT /api/dev/prompts/{kind}` | `{ "text" }`。空文字で初期値に戻す。応答は GET と同じ |
 | `GET /api/dev/prompts/{kind}/history` | `{ "items": [{ "version", "savedBy", "savedAt", "text" }] }` |
 | `POST /api/dev/prompts/{kind}/revert` | `{ "version" }` |

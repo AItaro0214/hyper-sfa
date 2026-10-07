@@ -150,6 +150,24 @@
 .mn-md li.mn-ind1 { margin-left: 1.4em; }
 .mn-md li.mn-ind2 { margin-left: 2.8em; }
 .mn-md code { background: var(--glass-2); padding: 0 4px; border-radius: 4px; }
+/* 表・チェックボックス・引用・区切り線・コード・リンク（議事録と質問の答え） */
+.mn-md .mn-table-wrap { overflow-x: auto; margin: .6em 0 1em; border: 1px solid var(--line); border-radius: 10px; }
+.mn-md .mn-table { border-collapse: collapse; width: 100%; font-size: .92rem; line-height: 1.6; }
+.mn-md .mn-table th, .mn-md .mn-table td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.mn-md .mn-table th { background: var(--accent-soft); color: var(--text); font-weight: 700; white-space: nowrap; }
+.mn-md .mn-table tr:last-child td { border-bottom: 0; }
+.mn-md li.mn-task { list-style: none; margin-left: -1.2em; display: flex; gap: 8px; align-items: baseline; }
+.mn-md li.mn-task.mn-ind1 { margin-left: .2em; }
+.mn-md li.mn-task.mn-ind2 { margin-left: 1.6em; }
+.mn-md .mn-check { flex: none; width: 1.05em; height: 1.05em; border: 2px solid var(--accent); border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: .75em; line-height: 1; transform: translateY(.15em); }
+.mn-md li.mn-task.done .mn-check { background: var(--accent); color: var(--on-accent); }
+.mn-md li.mn-task.done { color: var(--muted); }
+.mn-md blockquote { margin: .6em 0; padding: .2em 0 .2em 1em; border-left: 3px solid var(--line-hi); color: var(--muted); }
+.mn-md blockquote p { margin: .3em 0; }
+.mn-md hr { border: 0; border-top: 1px solid var(--line-hi); margin: 1.2em 0; }
+.mn-md .mn-pre { background: var(--glass-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; overflow-x: auto; font-size: .85rem; line-height: 1.6; }
+.mn-md .mn-pre code { background: none; padding: 0; }
+.mn-md a { color: var(--accent-text); text-decoration: underline; word-break: break-all; }
 .mn-transcript { white-space: pre-wrap; word-break: break-word; font: .92rem/1.8 var(--mono); background: var(--glass); border: 1px solid var(--line); padding: 14px; border-radius: var(--radius); }
 .mn-body audio { width: 100%; margin: 8px 0; }
 .mn-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }

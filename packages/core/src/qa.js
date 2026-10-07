@@ -1,6 +1,6 @@
 // 議事録への質問（docs/minutes-design.md §16、docs/core-api.md §15）。
-// 渡すのは文字起こしと資料の目次だけ。議事録（要約）は、その解釈に答えが引きずられないよう渡さない。
-import { formatMaterialsForPrompt } from './materials.js';
+// 渡すのは文字起こしと資料の全文（pptx / xlsx。PDF は名前だけ）だけ。議事録（要約）は、その解釈に答えが引きずられないよう渡さない。
+import { formatMaterialsFullText } from './materials.js';
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -30,7 +30,7 @@ export function buildQaContext({ transcript, materials, minute } = {}) {
     COUNTERPARTS: counterparts,
     ATTENDEES: attendees,
     MEMO: m.memo || '',
-    MATERIALS: (materials ?? []).length ? formatMaterialsForPrompt(materials) : '（資料なし）',
+    MATERIALS: (materials ?? []).length ? formatMaterialsFullText(materials, { pdfAttached: false }) : '（資料なし）',
     TRANSCRIPT: transcript ?? '',
   };
 }

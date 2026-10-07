@@ -10,7 +10,6 @@ import { esc, ask, errMessage, isProcessing } from './util.js';
 const MAX_FILES = 5;
 const MAX_BYTES = MATERIAL_LIMITS.maxBytes;
 const ICON = { pdf: icon('doc', 18), pptx: icon('screen', 18), xlsx: icon('doc', 18) };
-const OUTLINE = { pending: '目次: 作成待ち', done: '目次: 作成済み', failed: '目次: 失敗' };
 
 // 詳細画面が描き直されても、送信中の行が消えないように、議事録ごとに持っておく
 const inflight = new Map(); // minuteId → Map(key → { name, text })
@@ -44,12 +43,11 @@ export function renderMaterials(container, minute, { onChanged } = {}) {
     const meta = [
       unitLabel(mat),
       charts ? `グラフ ${charts} つ` : '',
-      OUTLINE[mat.outlineStatus] || '',
     ].filter(Boolean).join('　');
     return `<li class="mn-mat-row" data-mat="${esc(mat.id)}">
       <span class="mn-mat-icon" aria-hidden="true">${ICON[mat.kind] || icon('doc', 18)}</span>
       <span class="mn-mat-name">${esc(mat.name)}</span>
-      <span class="mn-muted mn-mat-meta${mat.outlineStatus === 'failed' ? ' mn-warn' : ''}">${esc(meta)}</span>
+      <span class="mn-muted mn-mat-meta">${esc(meta)}</span>
       <span class="mn-mat-btns"><button type="button" class="mn-btn mn-btn-sm" data-mat-open="${esc(mat.id)}">開く</button>
       ${own ? `<button type="button" class="mn-btn mn-btn-sm mn-btn-danger" data-mat-del="${esc(mat.id)}">削除</button>` : ''}</span>
     </li>`;

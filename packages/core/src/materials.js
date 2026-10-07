@@ -169,6 +169,87 @@ export function formatMaterialsForPrompt(materials) {
   return blocks.join('\n\n');
 }
 
+// ---- 資料の全文（議事録・質問に渡す。docs/core-api.md §13b） ----
+
+const FULL_TEXT_MAX = 400000;
+const FULL_TEXT_CUT = '（長いので以降は省略）';
+
+function pptxFullText(ex) {
+  const lines = [];
+  (ex.slides ?? []).forEach((s, i) => {
+    const no = Number.isInteger(s?.no) ? s.no : i + 1;
+    const title = String(s?.title ?? '').trim();
+    lines.push(`スライド ${no}${title ? `「${title}」` : ''}`);
+    const text = String(s?.text ?? '').trim();
+    if (text) lines.push(text);
+    const notes = String(s?.notes ?? '').trim();
+    if (notes) lines.push(`ノート: ${notes}`);
+    for (const c of s?.charts ?? []) lines.push(`図: ${chartToString(c)}`);
+  });
+  return lines;
+}
+
+function xlsxFullText(ex) {
+  const lines = [];
+  (ex.sheets ?? []).forEach((sh, i) => {
+    lines.push(`シート ${i + 1}「${String(sh?.name ?? '').trim() || `シート ${i + 1}`}」`);
+    for (const r of sh?.rows ?? []) lines.push((Array.isArray(r) ? r : []).map(cell).join('\t'));
+    for (const c of sh?.charts ?? []) lines.push(`図: ${chartToString(c)}`);
+  });
+  return lines;
+}
+
+/** 資料ごとに maxChars を均等に割り当てる。短い資料の余りは、長い資料に回す。 */
+function budgets(sizes, total) {
+  const out = sizes.map(() => 0);
+  let left = total;
+  let open = sizes.map((_, i) => i);
+  while (open.length) {
+    const share = Math.floor(left / open.length);
+    const fit = open.filter((i) => sizes[i] <= share);
+    if (!fit.length) {
+      for (const i of open) out[i] = share;
+      break;
+    }
+    for (const i of fit) {
+      out[i] = sizes[i];
+      left -= sizes[i];
+    }
+    open = open.filter((i) => !fit.includes(i));
+  }
+  return out;
+}
+
+/**
+ * 議事録・質問のプロンプトの {{MATERIALS}} に差し込む、資料の全文。
+ * pptx / xlsx は抜いた JSON の本文・表・グラフの元データを切らずに並べる。PDF はモデルに添付するので「添付の PDF」とだけ書く。
+ * @param {Array<{seq:number,name:string,kind:string,extract?:object|null}>} materials
+ */
+export function formatMaterialsFullText(materials, { maxChars = FULL_TEXT_MAX, pdfAttached = true } = {}) {
+  const list = materials ?? [];
+  const blocks = list.map((m) => {
+    const head = `資料 ${m.seq}: ${m.name}`;
+    if (m.kind === 'pdf') {
+      return { head, body: pdfAttached ? '  （添付の PDF を見てください）' : '  （PDF の中身は渡していません）', real: false };
+    }
+    const ex = m.extract;
+    const lines = ex?.kind === 'pptx' ? pptxFullText(ex) : ex?.kind === 'xlsx' ? xlsxFullText(ex) : null;
+    if (!lines) return { head, body: '  （中身を読み取れませんでした）', real: false };
+    return { head, body: lines.join('\n'), real: true };
+  });
+  if (!blocks.some((b) => b.real)) {
+    const none = list.some((m) => m.kind === 'pdf') && pdfAttached
+      ? '（文字で渡す資料はありません。添付の PDF を見てください）'
+      : '（文字で渡す資料はありません）';
+    return [...blocks.map((b) => b.head), '', none].join('\n').trim();
+  }
+  const sizes = blocks.map((b) => b.body.length);
+  const caps = sizes.reduce((a, c) => a + c, 0) > maxChars ? budgets(sizes, maxChars) : null;
+  return blocks
+    .map((b, i) => `${b.head}\n${caps && b.body.length > caps[i] ? `${b.body.slice(0, caps[i])}\n${FULL_TEXT_CUT}` : b.body}`)
+    .join('\n\n');
+}
+
 // ---- 対応表 ----
 
 /** 「HH:MM:SS」「MM:SS」「秒数」→ 秒。読めなければ null。 */

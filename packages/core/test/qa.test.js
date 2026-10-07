@@ -45,13 +45,13 @@ test('trimTurns', () => {
 test('buildQaContext とプロンプト', () => {
   const c = buildQaContext({
     transcript: '[00:00:01] a: こんにちは',
-    materials: [{ seq: 1, name: 'x.pdf', kind: 'pdf', outline: { sections: [{ page: 1, title: '料金', summary: 's', figures: [], keywords: [] }] } }],
+    materials: [{ seq: 1, name: 'x.pdf', kind: 'pdf' }, { seq: 2, name: 'y.xlsx', kind: 'xlsx', extract: { kind: 'xlsx', sheets: [{ name: '料金', rows: [['A', 100]], charts: [] }] } }],
     minute: { title: '定例', heldAt: '2026-10-01T01:30:00Z', counterparts: [{ company: 'A社', name: '田中' }], attendees: [{ name: '佐藤' }], memo: 'm' },
   });
   assert.equal(c.DATE, '2026-10-01 10:30');
   assert.equal(c.COUNTERPARTS, 'A社 田中');
   assert.equal(c.ATTENDEES, '佐藤');
-  assert.ok(c.MATERIALS.includes('資料 1: x.pdf'));
+  assert.ok(c.MATERIALS.includes('資料 1: x.pdf') && c.MATERIALS.includes('A	100'));
   assert.equal(buildQaContext({ transcript: 't' }).MATERIALS, '（資料なし）');
   const text = renderPrompt(DEFAULT_PROMPTS.qa, c);
   assert.ok(text.includes('タイトル: 定例') && text.includes('こんにちは') && text.includes('資料 1: x.pdf'));

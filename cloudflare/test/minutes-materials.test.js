@@ -1,4 +1,4 @@
-// 資料を踏まえた議事録（minutes-design.md §15）。実 API は呼ばず、偽物の step / D1 / R2 / fetch で流れを確かめる。
+// 資料を踏まえた議事録（minutes-design.md §15.3b）。実 API は呼ばず、偽物の step / D1 / R2 / fetch で流れを確かめる。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Hono } from 'hono';
@@ -85,7 +85,7 @@ function fakeDb({ materialRows }) {
       const m = S.minute;
       return { transcript_key: m.transcript_key, summary_key: m.summary_key, summary_prev_key: m.summary_prev_key, summary_prev_mapping_key: m.summary_prev_mapping_key };
     }
-    if (/SET status = 'summarizing'/.test(sql)) { Object.assign(S.minute, { status: 'summarizing', step: /'outline'/.test(sql) ? 'outline' : 'summarize_materials' }); return {}; }
+    if (/SET status = 'summarizing'/.test(sql)) { Object.assign(S.minute, { status: 'summarizing', step: 'summarize_materials' }); return {}; }
     if (/UPDATE minutes SET summary_prev_key/.test(sql)) {
       Object.assign(S.minute, {
         summary_prev_key: S.minute.summary_key, summary_key: a[0], summary_version: a[1], summary_model: a[2],
@@ -127,7 +127,6 @@ function makeDeps({ fetch, events, provider = 'gemini' }) {
   const prompts = {
     summarize: '議事録 {{TRANSCRIPT}}',
     transcribe: '文字起こし',
-    outline: '目次化 {{NAME}} {{KIND}}',
     summarize_materials: '資料つき議事録\n{{MATERIALS}}\n---\n{{TRANSCRIPT}}',
   };
   return {
@@ -142,14 +141,7 @@ function makeDeps({ fetch, events, provider = 'gemini' }) {
   };
 }
 
-const OUTLINE = { sections: [{ page: 2, title: '地域別売上', summary: '地域ごとの売上', figures: ['棒グラフ: 関西だけ伸びている'], keywords: ['関西'] }] };
-const RESULT = {
-  mapping: [
-    { material: 1, page: 2, start: '12:10', end: '00:18:40', confidence: 'HIGH' },
-    { material: 9, page: 1, start: '00:00:01', end: '00:00:02', confidence: 'low' }, // 無い資料番号は捨てられる
-  ],
-  markdown: '## 要点\n資料に沿った議事録',
-};
+const SUMMARY_MD = '## 要点\n資料に沿った議事録（関東は 120）';
 
 function run(env, deps) {
   const step = fakeStep();
@@ -158,7 +150,7 @@ function run(env, deps) {
 
 // ---- テスト ----
 
-test('PDF（Gemini）と xlsx: 目次が 2 つ作られ、議事録と対応表が保存される', async () => {
+test('PDF（Gemini）と xlsx: 資料をそのまま 1 回で渡し、議事録だけ保存する（目次も対応表も無い）', async () => {
   const db = fakeDb({ materialRows: [PDF, XLSX] });
   const env = {
     DB: db,
@@ -172,47 +164,68 @@ test('PDF（Gemini）と xlsx: 目次が 2 つ作られ、議事録と対応表�
     }),
   };
   const events = [];
-  const fetch = fakeFetch([() => genOk(JSON.stringify(OUTLINE)), () => genOk(JSON.stringify(RESULT))]);
+  const fetch = fakeFetch([() => genOk(SUMMARY_MD)]);
   const { r, step } = await run(env, makeDeps({ fetch, events }));
 
   assert.equal(r.ok, true);
   assert.equal(db.state.minute.status, 'done');
-  // 目次 2 つ（PDF はモデル、xlsx は機械的に）
-  assert.equal(db.state.materials[0].outline_status, 'done');
-  assert.ok(env.DATA.m.has('minutes/M1/materials/MAT1.outline.json'));
-  assert.ok(env.DATA.m.has('minutes/M1/materials/MAT2.outline.json'));
-  assert.equal(step.attempts['outline-1'], 1);
-  assert.equal(step.attempts['outline-2'], 1);
+  assert.equal(step.attempts['summarize-materials'], 1);
   // PDF は Gemini の Files API に預けて、使い終わったら消す
   assert.equal(fetch.calls.filter((c) => c.method === 'DELETE').length, 1);
-  // 2 段目のプロンプトに両方の目次と文字起こしが入っている
+  // モデルの呼び出しは 1 回。parts は PDF の fileData → プロンプトの文。JSON スキーマは付けない
   const gens = fetch.calls.filter((c) => c.url.includes(':generateContent'));
-  assert.equal(gens.length, 2);
-  const outlineBody = JSON.parse(gens[0].body);
-  assert.equal(outlineBody.contents[0].parts[0].fileData.mimeType, 'application/pdf');
-  assert.equal(outlineBody.generationConfig.responseMimeType, 'application/json');
-  const summaryPrompt = JSON.parse(gens[1].body).contents[0].parts.at(-1).text;
-  assert.match(summaryPrompt, /資料 1: 提案書\.pdf/);
-  assert.match(summaryPrompt, /棒グラフ: 関西だけ伸びている/);
-  assert.match(summaryPrompt, /資料 2: 売上\.xlsx/);
-  assert.match(summaryPrompt, /地域別売上/);
-  assert.match(summaryPrompt, /関西が伸びています/);
-  // 議事録と対応表
-  assert.equal(await env.DATA.m.get('minutes/M1/summary-v2.md'), RESULT.markdown);
-  const mapping = JSON.parse(await env.DATA.m.get('minutes/M1/summary-mapping-v2.json'));
-  assert.deepEqual(mapping, [{ material: 1, page: 2, start: '00:12:10', end: '00:18:40', confidence: 'high', materialName: '提案書.pdf' }]);
+  assert.equal(gens.length, 1);
+  const body = JSON.parse(gens[0].body);
+  const parts = body.contents[0].parts;
+  assert.equal(parts.length, 2);
+  assert.equal(parts[0].fileData.mimeType, 'application/pdf');
+  assert.equal(body.generationConfig.responseMimeType, undefined);
+  const prompt = parts[1].text;
+  assert.match(prompt, /資料 1: 提案書\.pdf\n {2}（添付の PDF を見てください）/);
+  assert.match(prompt, /資料 2: 売上\.xlsx/);
+  assert.match(prompt, /関東\t120/);
+  assert.match(prompt, /関西が伸びています/);
+  // 議事録だけ。目次も対応表も書かない
+  assert.equal(await env.DATA.m.get('minutes/M1/summary-v2.md'), SUMMARY_MD);
+  assert.ok(![...env.DATA.m.keys()].some((k) => /outline|mapping/.test(k)));
   const m = db.state.minute;
   assert.equal(m.summary_with_materials, 1);
-  assert.equal(m.summary_mapping_key, 'minutes/M1/summary-mapping-v2.json');
+  assert.equal(m.summary_mapping_key, null);
   assert.deepEqual(JSON.parse(m.summary_material_ids), ['MAT1', 'MAT2']);
   assert.equal(m.summary_prev_key, 'minutes/M1/summary-v1.md');
-  // 利用量は summarize のやり直しとして数える（目次 1 + 議事録 1）
+  // 利用量は summarize のやり直しとして 1 回だけ数える
   const used = events.filter((e) => e.kind === 'summarize' && e.ok);
-  assert.equal(used.length, 2);
+  assert.equal(used.length, 1);
   assert.ok(used.every((e) => e.retry === true && e.userId === 'U1'));
 });
 
-test('PDF の目次化が失敗しても、その資料は名前だけで議事録は作られる', async () => {
+test('pptx の本文は 600 文字で切らずに prompt に入り、応答が JSON でも Markdown を取り出す', async () => {
+  const long = 'あ'.repeat(900);
+  const PPTX = mat(1, { name: '説明.pptx', kind: 'pptx', key: 'minutes/M1/materials/MAT1.pptx', extract_key: 'minutes/M1/materials/MAT1.extract.json', outline_status: 'none' });
+  const db = fakeDb({ materialRows: [PPTX] });
+  const env = {
+    DB: db,
+    AUDIO: fakeR2(),
+    DATA: fakeR2({
+      'minutes/M1/transcript-v1.txt': '[00:00:01] 話者A: この数字が',
+      [PPTX.extract_key]: JSON.stringify({ kind: 'pptx', slides: [{ no: 3, title: '地域別売上', text: long, notes: '', charts: [] }] }),
+    }),
+  };
+  const fetch = fakeFetch([() => genOk(JSON.stringify({ mapping: [], markdown: '## 要点\n古いプロンプトの答え' }))]);
+  const { r } = await run(env, makeDeps({ fetch, events: [] }));
+
+  assert.equal(r.ok, true);
+  const gens = fetch.calls.filter((c) => c.url.includes(':generateContent'));
+  assert.equal(gens.length, 1);
+  const parts = JSON.parse(gens[0].body).contents[0].parts;
+  assert.equal(parts.length, 1, 'PDF が無ければ文だけ');
+  assert.ok(parts[0].text.includes(long));
+  assert.match(parts[0].text, /スライド 3「地域別売上」/);
+  assert.equal(await env.DATA.m.get('minutes/M1/summary-v2.md'), '## 要点\n古いプロンプトの答え');
+  assert.equal(fetch.calls.filter((c) => c.method === 'DELETE').length, 0);
+});
+
+test('議事録のモデルが続けて失敗したら failed になり、預けたファイルは消す', async () => {
   const db = fakeDb({ materialRows: [PDF] });
   const env = {
     DB: db,
@@ -220,19 +233,12 @@ test('PDF の目次化が失敗しても、その資料は名前だけで議事�
     DATA: fakeR2({ 'minutes/M1/transcript-v1.txt': '[00:00:01] 話者A: こんにちは', [PDF.key]: '%PDF-1.7' }),
   };
   const down = () => jsonRes({ error: { status: 'UNAVAILABLE', message: 'overloaded' } }, 503);
-  const fetch = fakeFetch([down, down, down, () => genOk(JSON.stringify({ mapping: [], markdown: '## 要点\n目次なし' }))]);
+  const fetch = fakeFetch([down]);
   const { r, step } = await run(env, makeDeps({ fetch, events: [] }));
 
-  assert.equal(r.ok, true);
-  assert.equal(step.attempts['outline-1'], 3, '目次化は 3 回試す');
-  assert.equal(db.state.materials[0].outline_status, 'failed');
-  assert.equal(db.state.minute.status, 'done');
-  assert.equal(await env.DATA.m.get('minutes/M1/summary-v2.md'), '## 要点\n目次なし');
-  const gens = fetch.calls.filter((c) => c.url.includes(':generateContent'));
-  const prompt = JSON.parse(gens.at(-1).body).contents[0].parts.at(-1).text;
-  assert.match(prompt, /資料 1: 提案書\.pdf/);
-  assert.match(prompt, /目次なし/);
-  // 預けたファイルは失敗しても消す
+  assert.equal(r.ok, false);
+  assert.equal(step.attempts['summarize-materials'], 3);
+  assert.equal(db.state.minute.status, 'failed');
   assert.equal(fetch.calls.filter((c) => c.method === 'DELETE').length, 1);
 });
 
@@ -251,12 +257,11 @@ test('資料を使わない作り直しは、資料の印と対応表を外す',
   assert.equal(db.state.minute.summary_mapping_key, null);
 });
 
-test('OpenAI: PDF は prefix + 本文 + suffix のストリームで /v1/files に預け、Responses で読ませて、すぐ消す', async () => {
+test('OpenAI: PDF は prefix + 本文 + suffix のストリームで /v1/files に預け、Responses で 1 回読ませて、すぐ消す', async () => {
   const db = fakeDb({ materialRows: [PDF] });
   const env = { DB: db, AUDIO: fakeR2(), DATA: fakeR2({ 'minutes/M1/transcript-v1.txt': '[00:00:01] 話者A: はい', [PDF.key]: '%PDF-BODY' }) };
   const calls = [];
-  const responses = [OUTLINE, RESULT].map((o) => ({ id: 'resp', status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(o) }] }], usage: { input_tokens: 10, output_tokens: 5 } }));
-  let r = 0;
+  const response = { id: 'resp', status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: SUMMARY_MD }] }], usage: { input_tokens: 10, output_tokens: 5 } };
   const fetch = async (url, init = {}) => {
     const u = String(url);
     calls.push({ url: u, method: init.method, body: init.body });
@@ -269,17 +274,19 @@ test('OpenAI: PDF は prefix + 本文 + suffix のストリームで /v1/files �
       return jsonRes({ id: 'file-1', bytes: 9 });
     }
     if (u.includes('/v1/files/file-1')) return jsonRes({ deleted: true });
-    if (u.endsWith('/v1/responses')) return jsonRes(responses[r++]);
+    if (u.endsWith('/v1/responses')) return jsonRes(response);
     throw new Error(`知らない URL: ${u}`);
   };
   const { r: out } = await run(env, makeDeps({ fetch, events: [], provider: 'openai' }));
   assert.equal(out.ok, true);
-  const body = JSON.parse(calls.find((c) => c.url.endsWith('/v1/responses')).body);
+  const responsesCalls = calls.filter((c) => c.url.endsWith('/v1/responses'));
+  assert.equal(responsesCalls.length, 1);
+  const body = JSON.parse(responsesCalls[0].body);
   assert.deepEqual(body.input[0].content[0], { type: 'input_file', file_id: 'file-1' });
-  assert.equal(body.text.format.type, 'json_schema');
+  assert.equal(body.input[0].content[1].type, 'input_text');
+  assert.equal(body.text?.format, undefined, 'JSON スキーマは付けない');
   assert.equal(calls.filter((c) => c.method === 'DELETE').length, 1);
-  assert.equal(db.state.materials[0].outline_status, 'done');
-  assert.equal(await env.DATA.m.get('minutes/M1/summary-v2.md'), RESULT.markdown);
+  assert.equal(await env.DATA.m.get('minutes/M1/summary-v2.md'), SUMMARY_MD);
 });
 
 // ---- ルート: 資料 0 件の regenerate ----

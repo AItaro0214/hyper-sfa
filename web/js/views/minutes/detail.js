@@ -130,7 +130,7 @@ export function renderDetail(container, params) {
     } else if (m.status === 'failed') {
       const f = m.failure || {};
       const text = f.kind === 'not_configured' ? '設定に問題があります。開発者に連絡してください。' : (f.message || 'うまくいきませんでした。');
-      box.innerHTML = `<div class="mn-alert mn-alert-error"><strong>${f.step === 'outline' ? '資料の目次作成' : f.step === 'summarize' ? '議事録の作成' : '文字起こし'}に失敗しました。</strong><div>${esc(text)}</div>
+      box.innerHTML = `<div class="mn-alert mn-alert-error"><strong>${f.step === 'outline' ? '資料を踏まえた議事録の作成' : f.step === 'summarize' ? '議事録の作成' : '文字起こし'}に失敗しました。</strong><div>${esc(text)}</div>
         <div class="mn-muted">録音は保存されています。</div>
         ${isOwner() && f.kind !== 'not_configured' && f.kind !== 'audio_expired' ? '<button class="mn-btn mn-btn-primary" data-retry>もう一度試す</button>' : ''}</div>`;
     } else if (m.status === 'uploaded') {
@@ -171,7 +171,7 @@ export function renderDetail(container, params) {
     }
   }
 
-  // 資料を踏まえた版は印を付け、対応表（資料のページ → 時刻）を議事録の下に出す
+  // 資料を踏まえた版は印を付ける。対応表（資料のページ → 時刻）は古い版にだけあるので、あるときだけ議事録の下に出す
   function summaryHtml(sum) {
     const withMat = sum.withMaterials ?? (m.summary && m.summary.withMaterials);
     const mapping = Array.isArray(sum.mapping) ? sum.mapping : [];

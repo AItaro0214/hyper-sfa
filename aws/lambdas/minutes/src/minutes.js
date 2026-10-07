@@ -6,8 +6,8 @@ import {
   buildTranscriptionRequest, parseTranscriptionResponse,
   buildChatRequest, parseChatResponse, classifyOpenAIError,
   offsetTimestamps, joinSegments, usageEvent,
-  extractJson, OUTLINE_SCHEMA, MATERIAL_SUMMARY_SCHEMA, outlineFromExtract, formatMaterialsForPrompt, normalizeMapping,
-  toGeminiSchema, buildOpenAIFileUploadRequest, parseOpenAIFileResponse, buildOpenAIFileDeleteRequest,
+  extractJson, formatMaterialsFullText,
+  buildOpenAIFileUploadRequest, parseOpenAIFileResponse, buildOpenAIFileDeleteRequest,
   buildResponsesRequest, parseResponsesResponse,
   buildFilesUploadRequest, parseFilesUploadStart, buildFilesUploadBodyHeaders, parseFileResponse,
   buildFileGetRequest, buildFileDeleteRequest,
@@ -19,9 +19,7 @@ const FETCH_TIMEOUT_MS = 60_000;
 const CONCURRENCY = 4;
 const TRANSCRIBE_MAX_TOKENS = 16000;
 const SUMMARIZE_MAX_TOKENS = 8000;
-const OUTLINE_MAX_TOKENS = 16000;
 const MATERIAL_SUMMARY_MAX_TOKENS = 16000;
-const OUTLINE_CONCURRENCY = 3;
 // Gemini の inlineData はリクエスト全体で 20MB が上限で、base64 で 4/3 倍になる。だから 14MB 以上は
 // Files API（無料・預けたファイルは 48 時間で消える）に預けて fileData で読ませる
 const GEMINI_INLINE_MAX_BYTES = 14 * 1024 * 1024;
@@ -388,13 +386,12 @@ function materialFields(meta, { withMaterials, materialIds, mappingKey }) {
   };
 }
 
-// ---- 資料を踏まえた議事録（§15.4, §15.5） ----
+// ---- 資料を踏まえた議事録（§15.3b） ----
 
 async function summarizeWithMaterials(ctx, owner, retry) {
   const { deps, id, meta } = ctx;
   const cfg = await loadConfig(deps, 'summarize', {});
   const apiKey = await keyFor(deps, cfg.model);
-  const outlinePrompt = await resolvePrompt(deps, 'outline');
   const summaryPrompt = await resolvePrompt(deps, 'summarize_materials');
 
   const r = await deps.ddb.query({ pk: deps.K.minute(id).pk, skPrefix: 'MAT#' });
@@ -409,76 +406,48 @@ async function summarizeWithMaterials(ctx, owner, retry) {
     transcript = Buffer.from(await deps.s3.getObjectBuffer({ bucket: deps.env.DATA_BUCKET, key: meta.transcript.key })).toString('utf8');
   }
 
-  // 目次化と議事録の利用量は、1 回の「議事録」としてまとめて記録する（§15.5）
   const acc = { inputTokens: 0, outputTokens: 0 };
+  // 預けた PDF は成功でも失敗でも最後に消す
+  const cleanups = [];
   let text;
-  let mapping;
   try {
-    await setMeta(ctx, { step: 'outline' });
-    const outlines = await buildOutlines(ctx, { cfg, apiKey, prompt: outlinePrompt.prompt, mats, acc });
-
     await setMeta(ctx, { step: 'summarize_materials' });
-    const list = mats.map((m) => ({ seq: m.seq, name: m.name, kind: m.kind, outline: outlines.get(m.seq) ?? null }));
-    const vars = { ...promptVars(meta), MATERIALS: formatMaterialsForPrompt(list), TRANSCRIPT: transcript };
-    const out = await summarizeMaterialsText(deps, { cfg, apiKey, prompt: renderPrompt(summaryPrompt.prompt, vars), acc });
-    text = out.markdown;
-    mapping = normalizeMapping(out.mapping, list);
+    // 目次化はしない。縮約すると表の数字が消えるため、資料をそのまま渡す（§15.3b）
+    const list = [];
+    const pdfParts = [];
+    // リクエストに直接入れる PDF の合計（Gemini のリクエストは 20MB まで。base64 で 1.33 倍になるので 14MB に抑える）
+    const inline = { bytes: 0 };
+    for (const m of mats) {
+      if (m.kind === 'pdf') {
+        pdfParts.push(await attachPdf(deps, { cfg, apiKey, mat: m, cleanups, inline }));
+        list.push({ seq: m.seq, name: m.name, kind: m.kind, extract: null });
+      } else {
+        const extract = m.extractKey ? await readJsonObject(deps, m.extractKey) : null;
+        list.push({ seq: m.seq, name: m.name, kind: m.kind, extract });
+      }
+    }
+    const vars = { ...promptVars(meta), MATERIALS: formatMaterialsFullText(list), TRANSCRIPT: transcript };
+    text = await summarizeMaterialsText(deps, { cfg, apiKey, prompt: renderPrompt(summaryPrompt.prompt, vars), pdfParts, acc });
   } catch (e) {
     const err = e instanceof MinutesError ? e : new MinutesError('provider');
     await usage(deps, 'summarize', owner, cfg.model.id, acc, 0, false, err.kind, retry);
     throw err;
+  } finally {
+    for (const fn of cleanups) await fn();
   }
   await usage(deps, 'summarize', owner, cfg.model.id, acc, 0, true, null, retry);
 
   const version = (meta.summary?.version ?? 0) + 1;
   const key = `minutes/${id}/summary-v${version}.md`;
-  const mappingKey = `minutes/${id}/summary-mapping-v${version}.json`;
   await deps.s3.putObject({ bucket: deps.env.DATA_BUCKET, key, body: text, contentType: 'text/markdown; charset=utf-8' });
-  await deps.s3.putObject({ bucket: deps.env.DATA_BUCKET, key: mappingKey, body: JSON.stringify(mapping), contentType: 'application/json' });
   await setMeta(ctx, {
     summary: {
       key, version, createdAt: iso(deps), modelId: cfg.model.id, promptVersion: summaryPrompt.promptVersion,
       previousKey: meta.summary?.key ?? null,
-      ...materialFields(meta, { withMaterials: true, materialIds: mats.map((m) => m.id), mappingKey }),
+      // 対応表は作らない（§15.3b）
+      ...materialFields(meta, { withMaterials: true, materialIds: mats.map((m) => m.id), mappingKey: null }),
     },
   });
-}
-
-/** 資料ごとの目次。作れなかった資料は null（名前だけをモデルに渡す）。seq → 目次 */
-async function buildOutlines(ctx, { cfg, apiKey, prompt, mats, acc }) {
-  const { deps } = ctx;
-  const out = new Map();
-  const todo = [];
-  for (const m of mats) {
-    if (m.kind === 'pdf') {
-      if (m.outlineStatus === 'done' && m.outlineKey) {
-        out.set(m.seq, await readJsonObject(deps, m.outlineKey));
-      } else {
-        todo.push(m);
-      }
-    } else if (m.extractKey) {
-      // pptx / xlsx はモデルを使わず、ブラウザが抜いた JSON から機械的に作る
-      const extract = await readJsonObject(deps, m.extractKey);
-      out.set(m.seq, extract ? outlineFromExtract(extract, { name: m.name }) : null);
-    } else {
-      out.set(m.seq, null);
-    }
-  }
-  await runPool(todo, OUTLINE_CONCURRENCY, async (m) => {
-    try {
-      const outline = await outlinePdf(deps, { cfg, apiKey, prompt, mat: m, acc });
-      const outlineKey = `minutes/${ctx.id}/materials/${m.id}.outline.json`;
-      await deps.s3.putObject({ bucket: deps.env.DATA_BUCKET, key: outlineKey, body: JSON.stringify(outline), contentType: 'application/json' });
-      await deps.ddb.update(m.pk, m.sk, { set: { outlineStatus: 'done', outlineKey } });
-      out.set(m.seq, outline);
-    } catch (e) {
-      // 目次にできない資料があっても議事録は作る。その資料は名前だけを渡す
-      console.log(`minutes: outline failed kind=${e instanceof MinutesError ? e.kind : 'unexpected'}`);
-      await deps.ddb.update(m.pk, m.sk, { set: { outlineStatus: 'failed' } }).catch(() => {});
-      out.set(m.seq, null);
-    }
-  });
-  return out;
 }
 
 async function readJsonObject(deps, key) {
@@ -490,38 +459,36 @@ async function readJsonObject(deps, key) {
   }
 }
 
-// PDF 1 件を、モデルに読ませて目次にする。100 ページ超の分割は実機で必要になったときに足す（§15.4）
-async function outlinePdf(deps, { cfg, apiKey, prompt, mat, acc }) {
+/**
+ * PDF 1 件を議事録のモデルに渡せる形にする。Gemini は 14MB 未満ならリクエストに直接、以上は Files API。
+ * OpenAI は /v1/files に預けて input_file にする。預けたものは cleanups に消す処理を積む。
+ * 戻り値は Gemini なら parts の要素、OpenAI なら input_file の要素。
+ */
+async function attachPdf(deps, { cfg, apiKey, mat, cleanups, inline = { bytes: 0 } }) {
   const model = cfg.model;
   const buf = Buffer.from(await deps.s3.getObjectBuffer({ bucket: deps.env.DATA_BUCKET, key: mat.key }));
-  const text = renderPrompt(prompt, { NAME: mat.name, KIND: mat.kind });
-  const useFiles = model.provider !== 'openai' && buf.length >= GEMINI_INLINE_MAX_BYTES;
-  // 預けるのは 1 回だけ（withRetry のやり直しで預け直さない）
-  const uploaded = useFiles ? await uploadPdfToGemini(deps, { apiKey, buf, name: mat.id }) : null;
-  let raw;
-  try {
-    raw = await withRetry(deps, async () => {
-      if (model.provider === 'openai') return outlineViaOpenAI(deps, { model, apiKey, buf, mat, text, acc });
-      const req = buildGenerateRequest({
-        model: model.id, apiKey, prompt: text,
-        parts: [uploaded
-          ? { fileData: { mimeType: 'application/pdf', fileUri: uploaded.uri } }
-          : { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } }],
-        schema: toGeminiSchema(OUTLINE_SCHEMA), thinkingLevel: model.thinkingLevel, maxOutputTokens: OUTLINE_MAX_TOKENS,
-      });
-      const p = parseGenerateResponse(await post(deps, req, 'gemini'));
-      acc.inputTokens += p.usage?.inputTokens ?? 0;
-      acc.outputTokens += (p.usage?.outputTokens ?? 0) + (p.usage?.thoughtTokens ?? 0);
-      if (p.blocked) throw new MinutesError('blocked');
-      if (p.finishReason === 'MAX_TOKENS') throw new MinutesError('truncated');
-      return p.text ?? '';
+  if (model.provider === 'openai') {
+    const up = buildOpenAIFileUploadRequest({ apiKey, filename: `${mat.id}.pdf`, contentType: 'application/pdf' });
+    const body = Buffer.concat([Buffer.from(up.prefix), buf, Buffer.from(up.suffix)]);
+    const { id: fileId } = parseOpenAIFileResponse(await post(deps, { url: up.url, method: up.method, headers: up.headers, body }, 'openai'));
+    cleanups.push(async () => {
+      try {
+        const del = buildOpenAIFileDeleteRequest({ apiKey, fileId });
+        await deps.fetch(del.url, { method: del.method, headers: del.headers });
+      } catch {
+        console.error('minutes: openai file delete failed');
+      }
     });
-  } finally {
-    if (uploaded) await deleteGeminiFile(deps, { apiKey, name: uploaded.name });
+    return { type: 'input_file', fileId };
   }
-  const parsed = parseJsonOrTruncated(raw);
-  if (!Array.isArray(parsed.sections)) throw new MinutesError('truncated');
-  return parsed;
+  // 1 件ずつではなく合計で判定する（14MB 弱の PDF が 2 つあるとリクエストの上限を超えるため）。超える分は Files API に預ける
+  if (inline.bytes + buf.length < GEMINI_INLINE_MAX_BYTES) {
+    inline.bytes += buf.length;
+    return { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } };
+  }
+  const uploaded = await uploadPdfToGemini(deps, { apiKey, buf, name: mat.id });
+  cleanups.push(() => deleteGeminiFile(deps, { apiKey, name: uploaded.name }));
+  return { fileData: { mimeType: 'application/pdf', fileUri: uploaded.uri } };
 }
 
 // 預けた PDF は読み終えたら消す。失敗しても無視する（48 時間で消える）
@@ -571,52 +538,29 @@ async function uploadPdfToGemini(deps, { apiKey, buf, name }) {
   return { name: f.name, uri: f.uri };
 }
 
-// OpenAI は /v1/files に預けて input_file で渡し、使い終えたら消す（預けたファイルを残さないため）
-async function outlineViaOpenAI(deps, { model, apiKey, buf, mat, text, acc }) {
-  const up = buildOpenAIFileUploadRequest({ apiKey, filename: `${mat.id}.pdf`, contentType: 'application/pdf' });
-  const body = Buffer.concat([Buffer.from(up.prefix), buf, Buffer.from(up.suffix)]);
-  const { id: fileId } = parseOpenAIFileResponse(await post(deps, { url: up.url, method: up.method, headers: up.headers, body }, 'openai'));
-  try {
-    const req = buildResponsesRequest({
-      model: model.id, apiKey, jsonSchema: OUTLINE_SCHEMA, schemaName: 'outline',
-      parts: [{ type: 'input_file', fileId }, { type: 'input_text', text }],
-      maxOutputTokens: OUTLINE_MAX_TOKENS, reasoningEffort: model.reasoningEffort,
-    });
-    const p = parseResponsesResponse(await post(deps, req, 'openai'));
-    acc.inputTokens += p.usage?.inputTokens ?? 0;
-    acc.outputTokens += p.usage?.outputTokens ?? 0;
-    if (/max_output_tokens|length/.test(String(p.finishReason ?? ''))) throw new MinutesError('truncated');
-    return p.text ?? '';
-  } finally {
+// 出力は Markdown の文章。保存済みの古いプロンプトが JSON（{"markdown": ...}）で返すよう指示していても、中身を使う
+function markdownFromResponse(raw) {
+  const t = String(raw ?? '').trim();
+  if (t.startsWith('{') || t.startsWith('```')) {
     try {
-      const del = buildOpenAIFileDeleteRequest({ apiKey, fileId });
-      await deps.fetch(del.url, { method: del.method, headers: del.headers });
+      const r = extractJson(t);
+      if (!r.truncated && typeof r.value?.markdown === 'string' && r.value.markdown.trim()) return r.value.markdown;
     } catch {
-      console.error('minutes: openai file delete failed');
+      // JSON ではない文章なので、そのまま使う
     }
   }
+  return t;
 }
 
-// JSON が取り出せない、または途中で切れている応答は truncated 扱い（withRetry が 1 回だけやり直す）
-function parseJsonOrTruncated(raw) {
-  let r;
-  try {
-    r = extractJson(raw);
-  } catch {
-    throw new MinutesError('truncated');
-  }
-  if (r.truncated || !r.value || typeof r.value !== 'object') throw new MinutesError('truncated');
-  return r.value;
-}
-
-async function summarizeMaterialsText(deps, { cfg, apiKey, prompt, acc }) {
+// parts の順は「PDF（資料の順）→ プロンプトの文」
+async function summarizeMaterialsText(deps, { cfg, apiKey, prompt, pdfParts, acc }) {
   const model = cfg.model;
   return withRetry(deps, async () => {
     let raw;
     if (model.provider === 'openai') {
       const req = buildResponsesRequest({
-        model: model.id, apiKey, parts: [{ type: 'input_text', text: prompt }], jsonSchema: MATERIAL_SUMMARY_SCHEMA,
-        schemaName: 'material_summary', maxOutputTokens: MATERIAL_SUMMARY_MAX_TOKENS, reasoningEffort: model.reasoningEffort,
+        model: model.id, apiKey, parts: [...pdfParts, { type: 'input_text', text: prompt }],
+        maxOutputTokens: MATERIAL_SUMMARY_MAX_TOKENS, reasoningEffort: model.reasoningEffort,
       });
       const p = parseResponsesResponse(await post(deps, req, 'openai'));
       acc.inputTokens += p.usage?.inputTokens ?? 0;
@@ -625,7 +569,7 @@ async function summarizeMaterialsText(deps, { cfg, apiKey, prompt, acc }) {
       raw = p.text ?? '';
     } else {
       const req = buildGenerateRequest({
-        model: model.id, apiKey, prompt, parts: [], schema: toGeminiSchema(MATERIAL_SUMMARY_SCHEMA),
+        model: model.id, apiKey, prompt, parts: pdfParts,
         thinkingLevel: model.thinkingLevel, maxOutputTokens: MATERIAL_SUMMARY_MAX_TOKENS,
       });
       const p = parseGenerateResponse(await post(deps, req, 'gemini'));
@@ -635,9 +579,9 @@ async function summarizeMaterialsText(deps, { cfg, apiKey, prompt, acc }) {
       if (p.finishReason === 'MAX_TOKENS') throw new MinutesError('truncated');
       raw = p.text ?? '';
     }
-    const v = parseJsonOrTruncated(raw);
-    if (typeof v.markdown !== 'string' || !v.markdown.trim()) throw new MinutesError('truncated');
-    return { markdown: v.markdown, mapping: Array.isArray(v.mapping) ? v.mapping : [] };
+    const md = markdownFromResponse(raw);
+    if (!md) throw new MinutesError('truncated');
+    return md;
   });
 }
 
@@ -766,7 +710,7 @@ async function loadConfig(deps, kind, { modelId, promptText }) {
 }
 
 // 編集済みのプロンプトがあればそれ、無ければ初期値。モデルとは別に引けるのは、
-// 資料の目次化と資料つきの議事録が「議事録」のモデルを使い、プロンプトだけ別だから
+// 資料つきの議事録が「議事録」のモデルを使い、プロンプトだけ別だから
 async function resolvePrompt(deps, kind, promptText, setting) {
   const st = setting ?? (await get(deps, deps.K.setting('gemini'))) ?? {};
   let prompt = DEFAULT_PROMPTS[kind];

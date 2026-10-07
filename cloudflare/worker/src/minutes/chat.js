@@ -1,10 +1,10 @@
 // 議事録への質問（docs/minutes-design.md §16、api-contract.md「質問」）。
-// 渡すのは文字起こしの全文と資料の目次、会議の情報だけ。議事録（要約）は渡さない（要約の解釈に引きずられず、元の発言から答えさせるため）。
+// 渡すのは文字起こしの全文と資料の全文（pptx / xlsx。PDF は名前だけ）、会議の情報だけ。議事録（要約）は渡さない（要約の解釈に引きずられず、元の発言から答えさせるため）。
 //
 // CPU について: Worker の CPU 時間は 1 回 10 ミリ秒（無料プラン）。ここで Worker の中で読むのは文字起こし（文章）と
-// 資料の目次（JSON）だけで、数十 KB の文字列を読んで結合し、プロンプトに差し込むだけ。モデルの応答待ちは CPU に数えられない。
+// 資料の抜き出し（pptx / xlsx の JSON）だけで、数十 KB の文字列を読んで結合し、プロンプトに差し込むだけ。モデルの応答待ちは CPU に数えられない。
 // 音声や PDF の本体など、重いものは読まない。
-import { DEFAULT_SELECTION, gemini, openai, renderPrompt, outlineFromExtract, buildQaContext, trimTurns } from '../core.js';
+import { DEFAULT_SELECTION, gemini, openai, renderPrompt, buildQaContext, trimTurns } from '../core.js';
 import { getApiKey, getModel, getPrompt, getSelectedModel } from '../lib/settings.js';
 import { recordUsage } from '../lib/usage.js';
 import { jstDay } from '../lib/time.js';
@@ -109,17 +109,11 @@ export function chatRoutes(app, deps = {}) {
     )
       .bind(row.id)
       .all();
+    // pptx / xlsx は、ブラウザが抜いた JSON の全文を渡す。PDF は同期の応答に収めるため名前だけ（添付しない）
     const materials = [];
     for (const m of mats) {
-      let outline = null;
-      if (m.kind === 'pdf') {
-        if (m.outline_status === 'done' && m.outline_key) outline = await readJsonObject(env, m.outline_key);
-      } else if (m.extract_key) {
-        // pptx / xlsx は、ブラウザが抜いた JSON から機械的に作る（議事録の作成と同じ）
-        const extract = await readJsonObject(env, m.extract_key);
-        outline = extract ? outlineFromExtract(extract, { name: m.name }) : null;
-      }
-      materials.push({ seq: m.seq, name: m.name, kind: m.kind, outline });
+      const extract = m.kind !== 'pdf' && m.extract_key ? await readJsonObject(env, m.extract_key) : null;
+      materials.push({ seq: m.seq, name: m.name, kind: m.kind, extract });
     }
 
     const [minute] = await hydrate(env, [row], userId);

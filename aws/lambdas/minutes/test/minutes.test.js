@@ -93,99 +93,131 @@ test('動いている最中(20 分未満)は二重起動しない', async () => 
   assert.equal(t.fetchCalls, 0);
 });
 
-// ---- 資料を踏まえた議事録（§15） ----
+// ---- 資料を踏まえた議事録（§15.3b。目次化も対応表も作らず、資料をそのまま渡す） ----
 
-const OUTLINE_JSON = JSON.stringify({ sections: [{ page: 1, title: '表紙', summary: '提案の概要', figures: ['棒グラフ: 関西だけ伸びている'], keywords: ['提案'] }] });
-const SUMMARY_JSON = JSON.stringify({
-  mapping: [
-    { material: 1, page: 1, start: '00:00:10', end: '00:01:00', confidence: 'high' },
-    { material: 2, page: 1, start: '1:00', end: '2:00', confidence: 'bogus' },
-    { material: 9, page: 1, start: '0:00', end: '0:10', confidence: 'low' },
-  ],
-  markdown: '## 要点\n資料に沿った議事録',
-});
+const SUMMARY_MD = '## 要点\n資料に沿った議事録（売上は関東 120）';
 const XLSX_EXTRACT = { kind: 'xlsx', sheets: [{ name: '売上', rows: [['地域', '値'], ['関東', 120]], truncated: false, charts: [] }] };
+const PPTX_EXTRACT = { kind: 'pptx', slides: [{ no: 3, title: '地域別売上', text: 'あ'.repeat(900), notes: '', charts: [] }] };
 
-function materialSeed() {
-  return [
+function materialSeed({ withPdf = true, withPptx = false } = {}) {
+  const rows = [
     {
       pk: 'MIN#m1', sk: 'META', status: 'queued', ownerEmail: 'a@x.jp', title: '定例', heldAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
       transcript: { key: 'minutes/m1/transcript-v1.txt', version: 1 },
       summary: { key: 'minutes/m1/summary-v1.md', version: 1 },
     },
-    { pk: 'MIN#m1', sk: 'MAT#001', id: 'm001', seq: 1, name: '提案書.pdf', kind: 'pdf', state: 'ready', outlineStatus: 'pending', key: 'minutes/m1/materials/m001.pdf' },
-    { pk: 'MIN#m1', sk: 'MAT#002', id: 'm002', seq: 2, name: '売上.xlsx', kind: 'xlsx', state: 'ready', outlineStatus: 'none', key: 'minutes/m1/materials/m002.xlsx', extractKey: 'minutes/m1/materials/m002.extract.json' },
   ];
+  if (withPdf) rows.push({ pk: 'MIN#m1', sk: 'MAT#001', id: 'm001', seq: 1, name: '提案書.pdf', kind: 'pdf', state: 'ready', key: 'minutes/m1/materials/m001.pdf' });
+  rows.push({ pk: 'MIN#m1', sk: 'MAT#002', id: 'm002', seq: 2, name: '売上.xlsx', kind: 'xlsx', state: 'ready', key: 'minutes/m1/materials/m002.xlsx', extractKey: 'minutes/m1/materials/m002.extract.json' });
+  if (withPptx) rows.push({ pk: 'MIN#m1', sk: 'MAT#003', id: 'm003', seq: 3, name: '説明.pptx', kind: 'pptx', state: 'ready', key: 'minutes/m1/materials/m003.pptx', extractKey: 'minutes/m1/materials/m003.extract.json' });
+  return rows;
 }
 
-function materialDeps(ddb, { pdfOk }) {
+function putMaterials(t, { pdfBytes = Buffer.from('%PDF-1.4 fake') } = {}) {
+  t.puts.set('minutes/m1/transcript-v1.txt', Buffer.from('[00:00:10] 話者A: この数字が'));
+  t.puts.set('minutes/m1/materials/m001.pdf', pdfBytes);
+  t.puts.set('minutes/m1/materials/m002.extract.json', Buffer.from(JSON.stringify(XLSX_EXTRACT)));
+  t.puts.set('minutes/m1/materials/m003.extract.json', Buffer.from(JSON.stringify(PPTX_EXTRACT)));
+}
+
+function materialDeps(ddb, { text = SUMMARY_MD, pdfBytes } = {}) {
   const calls = [];
   const t = makeDeps({
     ddb,
     fetchImpl: async (url, init) => {
       const body = JSON.parse(init.body);
       const parts = (body.contents ?? []).flatMap((c) => c.parts ?? []);
-      const pdf = parts.find((p) => p.inlineData?.mimeType === 'application/pdf');
-      calls.push({ pdf: Boolean(pdf), prompt: parts.map((p) => p.text ?? '').join('') });
-      if (pdf) return pdfOk ? reply(OUTLINE_JSON) : { status: 400, json: async () => ({ error: { message: 'bad' } }) };
-      return reply(SUMMARY_JSON);
+      calls.push({
+        order: parts.map((p) => (p.inlineData ? 'pdf' : p.fileData ? 'file' : 'text')),
+        prompt: parts.map((p) => p.text ?? '').join(''),
+        schema: body.generationConfig?.responseSchema,
+      });
+      return reply(text);
     },
   });
-  t.puts.set('minutes/m1/transcript-v1.txt', Buffer.from('[00:00:10] 話者A: 提案です'));
-  t.puts.set('minutes/m1/materials/m001.pdf', Buffer.from('%PDF-1.4 fake'));
-  t.puts.set('minutes/m1/materials/m002.extract.json', Buffer.from(JSON.stringify(XLSX_EXTRACT)));
+  putMaterials(t, { pdfBytes });
   return { t, calls };
 }
 
-test('資料つき: PDF（Gemini）と xlsx の目次 → 議事録と対応表が保存される', async () => {
+test('資料つき: PDF（小）は inlineData で、プロンプトの前に 1 回で渡す。目次化も対応表も無い', async () => {
   const ddb = fakeDdb(materialSeed());
-  const { t, calls } = materialDeps(ddb, { pdfOk: true });
+  const { t, calls } = materialDeps(ddb);
   const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
   assert.equal(r.ok, true);
 
-  // 目次化は PDF の 1 回だけ（xlsx はモデルを使わない）。議事録は 1 回
-  assert.equal(calls.filter((c) => c.pdf).length, 1);
-  assert.equal(t.fetchCalls, 2);
-  assert.match(calls.find((c) => !c.pdf).prompt, /売上/); // xlsx の目次が差し込まれている
-  assert.match(calls.find((c) => !c.pdf).prompt, /関西だけ伸びている/); // PDF の図の説明が差し込まれている
-
-  assert.equal(ddb.m.get('MIN#m1|MAT#001').outlineStatus, 'done');
-  assert.ok(t.puts.has('minutes/m1/materials/m001.outline.json'));
+  // モデルの呼び出しは議事録の 1 回だけ。parts は PDF → 文。JSON スキーマは付けない
+  assert.equal(t.fetchCalls, 1);
+  assert.deepEqual(calls[0].order, ['pdf', 'text']);
+  assert.equal(calls[0].schema, undefined);
+  assert.match(calls[0].prompt, /関東\t120/); // xlsx の全行が文字で入っている
+  assert.match(calls[0].prompt, /資料 1: 提案書\.pdf\n {2}（添付の PDF を見てください）/);
 
   const meta = ddb.m.get('MIN#m1|META');
   assert.equal(meta.status, 'done');
   assert.equal(meta.summary.version, 2);
   assert.equal(meta.summary.withMaterials, true);
   assert.deepEqual(meta.summary.materialIds, ['m001', 'm002']);
+  assert.equal(meta.summary.mappingKey, null);
   assert.equal(meta.summary.previousKey, 'minutes/m1/summary-v1.md');
-  assert.equal(meta.summary.previousWithMaterials, false);
-  assert.match(t.puts.get('minutes/m1/summary-v2.md').toString(), /資料に沿った議事録/);
-  const mapping = JSON.parse(t.puts.get(meta.summary.mappingKey).toString());
-  // 存在しない資料番号は捨て、時刻と confidence は整う
-  assert.deepEqual(mapping.map((m) => [m.material, m.start, m.confidence]), [[1, '00:00:10', 'high'], [2, '00:01:00', 'medium']]);
+  assert.equal(t.puts.get('minutes/m1/summary-v2.md').toString(), SUMMARY_MD);
+  // 目次も対応表も S3 に書かない
+  assert.ok(![...t.puts.keys()].some((k) => /outline|mapping/.test(k)));
   assert.equal(t.usage.length, 1);
   assert.equal(t.usage[0].kind, 'summarize');
   assert.equal(t.usage[0].retry, true);
 });
 
-test('資料つき: PDF の目次化が失敗しても議事録は作られる（その資料は名前だけ）', async () => {
-  const ddb = fakeDdb(materialSeed());
-  const { t, calls } = materialDeps(ddb, { pdfOk: false });
+test('資料つき: pptx の本文は 600 文字で切らずに prompt へ入る', async () => {
+  const ddb = fakeDdb(materialSeed({ withPdf: false, withPptx: true }));
+  const { t, calls } = materialDeps(ddb);
   const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
   assert.equal(r.ok, true);
-  assert.equal(ddb.m.get('MIN#m1|MAT#001').outlineStatus, 'failed');
-  assert.equal(ddb.m.get('MIN#m1|META').status, 'done');
-  assert.equal(ddb.m.get('MIN#m1|META').summary.withMaterials, true);
-  const prompt = calls.filter((c) => !c.pdf).at(-1).prompt;
-  assert.match(prompt, /提案書\.pdf/);
-  assert.match(prompt, /目次なし/);
+  assert.deepEqual(calls[0].order, ['text']);
+  assert.ok(calls[0].prompt.includes('あ'.repeat(900)));
+  assert.match(calls[0].prompt, /スライド 3「地域別売上」/);
+});
+
+test('資料つき: 応答が {"markdown": ...} の JSON でも、Markdown を取り出して保存する', async () => {
+  const ddb = fakeDdb(materialSeed());
+  const { t } = materialDeps(ddb, { text: JSON.stringify({ mapping: [], markdown: '## 要点\n古いプロンプトの答え' }) });
+  const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
+  assert.equal(r.ok, true);
+  assert.equal(t.puts.get('minutes/m1/summary-v2.md').toString(), '## 要点\n古いプロンプトの答え');
+});
+
+test('資料つき: OpenAI は PDF を /v1/files に預けて input_file で渡し、終わったら削除する', async () => {
+  const s = materialSeed();
+  s.push({ pk: 'ORG', sk: 'SETTING#gemini', models: { summarize: 'gpt-x' } });
+  s.push({ pk: 'ORG', sk: 'MODEL#gpt-x', provider: 'openai', uses: ['summarize'] });
+  const ddb = fakeDdb(s);
+  const log = [];
+  let responsesBody;
+  const t = makeDeps({
+    ddb,
+    fetchImpl: async (url, init) => {
+      if (url.endsWith('/v1/files') && init.method === 'POST') { log.push('upload'); return { status: 200, json: async () => ({ id: 'file-1', bytes: 10 }) }; }
+      if (init.method === 'DELETE') { log.push(`delete:${url.split('/').pop()}`); return { status: 200, json: async () => ({}) }; }
+      log.push('responses');
+      responsesBody = JSON.parse(init.body);
+      return { status: 200, json: async () => ({ status: 'completed', output: [{ content: [{ type: 'output_text', text: SUMMARY_MD }] }], usage: { input_tokens: 10, output_tokens: 5 } }) };
+    },
+  });
+  putMaterials(t);
+  const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
+  assert.equal(r.ok, true);
+  assert.deepEqual(log, ['upload', 'responses', 'delete:file-1']);
+  const content = responsesBody.input[0].content;
+  assert.deepEqual(content.map((c) => c.type), ['input_file', 'input_text']);
+  assert.equal(content[0].file_id, 'file-1');
+  assert.equal(responsesBody.text?.format, undefined);
+  assert.equal(t.puts.get('minutes/m1/summary-v2.md').toString(), SUMMARY_MD);
 });
 
 test('資料つきでない議事録の作り直しは資料の印を外し、前の版の印を残す', async () => {
   const s = materialSeed();
   s[0].summary = { key: 'minutes/m1/summary-v2.md', version: 2, withMaterials: true, materialIds: ['m001'], mappingKey: 'minutes/m1/summary-mapping-v2.json' };
   const ddb = fakeDdb(s);
-  const { t } = materialDeps(ddb, { pdfOk: true });
+  const { t } = materialDeps(ddb, {});
   await runMinutes({ minuteId: 'm1', target: 'summary' }, t.deps);
   const sm = ddb.m.get('MIN#m1|META').summary;
   assert.equal(sm.withMaterials, false);
@@ -373,17 +405,11 @@ function bigPdfDeps(ddb, states) {
       if (init.method === 'DELETE') { log.push('delete'); return { status: 200, json: async () => ({}) }; }
       const parts = (JSON.parse(init.body).contents ?? []).flatMap((c) => c.parts ?? []);
       const fd = parts.find((p) => p.fileData);
-      if (fd) {
-        log.push(`generate:${fd.fileData.fileUri}:${Boolean(parts.find((p) => p.inlineData))}`);
-        return reply(OUTLINE_JSON);
-      }
-      log.push('summary');
-      return reply(SUMMARY_JSON);
+      log.push(`generate:${fd?.fileData.fileUri}:${Boolean(parts.find((p) => p.inlineData))}:${parts.at(-1).text ? 'text-last' : 'no-text'}`);
+      return reply(SUMMARY_MD);
     },
   });
-  t.puts.set('minutes/m1/transcript-v1.txt', Buffer.from('[00:00:10] 話者A: 提案です'));
-  t.puts.set('minutes/m1/materials/m001.pdf', Buffer.alloc(14 * 1024 * 1024 + 1));
-  t.puts.set('minutes/m1/materials/m002.extract.json', Buffer.from(JSON.stringify(XLSX_EXTRACT)));
+  putMaterials(t, { pdfBytes: Buffer.alloc(14 * 1024 * 1024 + 1) });
   return { t, log };
 }
 
@@ -392,8 +418,7 @@ test('資料つき: 14MB 以上の PDF は Files API に預けて fileData で�
   const { t, log } = bigPdfDeps(ddb, ['ACTIVE']);
   const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
   assert.equal(r.ok, true);
-  assert.deepEqual(log.slice(0, 4), ['start', 'body', 'generate:https://g/files/abc:false', 'delete']);
-  assert.equal(ddb.m.get('MIN#m1|MAT#001').outlineStatus, 'done');
+  assert.deepEqual(log, ['start', 'body', 'generate:https://g/files/abc:false:text-last', 'delete']);
 });
 
 test('資料つき: Files API が PROCESSING のあいだは ACTIVE になるまで待ってから読む', async () => {
@@ -401,5 +426,19 @@ test('資料つき: Files API が PROCESSING のあいだは ACTIVE になるま
   const { t, log } = bigPdfDeps(ddb, ['PROCESSING', 'ACTIVE']);
   const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
   assert.equal(r.ok, true);
-  assert.deepEqual(log.slice(0, 5), ['start', 'body', 'get', 'generate:https://g/files/abc:false', 'delete']);
+  assert.deepEqual(log, ['start', 'body', 'get', 'generate:https://g/files/abc:false:text-last', 'delete']);
+});
+
+test('資料つき: 直接入れる PDF は合計で判定し、合計が 14MB を超える分だけ Files API に預ける', async () => {
+  // 8MB の PDF が 2 つ。1 件ずつなら両方とも直接入れてしまい、合計でリクエストの上限（20MB）を超える
+  const seed = materialSeed();
+  seed.push({ pk: 'MIN#m1', sk: 'MAT#004', id: 'm004', seq: 4, name: '別紙.pdf', kind: 'pdf', state: 'ready', key: 'minutes/m1/materials/m004.pdf' });
+  const ddb = fakeDdb(seed);
+  const { t, log } = bigPdfDeps(ddb, ['ACTIVE']);
+  t.puts.set('minutes/m1/materials/m001.pdf', Buffer.alloc(8 * 1024 * 1024));
+  t.puts.set('minutes/m1/materials/m004.pdf', Buffer.alloc(8 * 1024 * 1024));
+  const r = await runMinutes({ minuteId: 'm1', target: 'summary', withMaterials: true }, t.deps);
+  assert.equal(r.ok, true);
+  // 1 つ目は直接（inlineData）、2 つ目は Files API（fileData）。両方が 1 回の呼び出しに入る
+  assert.deepEqual(log, ['start', 'body', 'generate:https://g/files/abc:true:text-last', 'delete']);
 });

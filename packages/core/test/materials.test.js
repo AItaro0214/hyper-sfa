@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MATERIAL_LIMITS, materialKindOf, outlineFromExtract, formatMaterialsForPrompt, normalizeMapping,
+  MATERIAL_LIMITS, materialKindOf, outlineFromExtract, formatMaterialsForPrompt, formatMaterialsFullText, normalizeMapping,
   OUTLINE_SCHEMA, MATERIAL_SUMMARY_SCHEMA, toGeminiSchema, PLACEHOLDERS, renderPrompt, DEFAULT_PROMPTS, buildGenerateRequest,
   buildResponsesRequest, parseResponsesResponse, buildOpenAIFileUploadRequest, buildOpenAIFileDeleteRequest, parseOpenAIFileResponse,
 } from '../src/index.js';
@@ -165,4 +165,37 @@ test('parseResponsesResponse', () => {
   assert.equal(cut.finishReason, 'max_output_tokens');
   assert.equal(cut.incomplete, true);
   assert.equal(parseResponsesResponse({}).text, '');
+});
+
+test('formatMaterialsFullText: pptx は切らず、グラフの元データも入る', () => {
+  const long = 'あ'.repeat(1500);
+  const s = formatMaterialsFullText([{ seq: 1, name: '提案.pptx', kind: 'pptx', extract: { kind: 'pptx', slides: [
+    { no: 7, title: '地域別売上', text: long, notes: '口頭補足', charts: [{ type: 'bar', categories: ['関東'], series: [{ name: '2025', values: [120] }] }] },
+  ] } }]);
+  assert.ok(s.includes(long));
+  assert.match(s, /^資料 1: 提案\.pptx\nスライド 7「地域別売上」\n/);
+  assert.ok(s.includes('ノート: 口頭補足') && s.includes('図: 棒グラフ: 系列「2025」 関東 120'));
+});
+
+test('formatMaterialsFullText: xlsx は全行（31 行目以降も）', () => {
+  const rows = Array.from({ length: 100 }, (_, i) => [`行${i + 1}`, i * 10]);
+  const s = formatMaterialsFullText([{ seq: 2, name: '表.xlsx', kind: 'xlsx', extract: { kind: 'xlsx', sheets: [{ name: '売上', rows, charts: [] }] } }]);
+  assert.ok(s.includes('シート 1「売上」') && s.includes('行31\t300') && s.includes('行100\t990'));
+});
+
+test('formatMaterialsFullText: PDF は添付、上限は資料ごとに切る', () => {
+  const pdf = { seq: 1, name: 'a.pdf', kind: 'pdf', extract: null };
+  assert.match(formatMaterialsFullText([pdf]), /添付の PDF/);
+  assert.match(formatMaterialsFullText([]), /文字で渡す資料はありません/);
+  assert.doesNotMatch(formatMaterialsFullText([pdf], { pdfAttached: false }), /添付の PDF を見て/);
+  const sheet = (n) => ({ kind: 'xlsx', sheets: [{ name: 's', rows: [['x'.repeat(n)]], charts: [] }] });
+  const s = formatMaterialsFullText([
+    pdf,
+    { seq: 2, name: 'small.xlsx', kind: 'xlsx', extract: sheet(100) },
+    { seq: 3, name: 'big1.xlsx', kind: 'xlsx', extract: sheet(5000) },
+    { seq: 4, name: 'big2.xlsx', kind: 'xlsx', extract: sheet(5000) },
+  ], { maxChars: 1000 });
+  assert.ok(s.includes('x'.repeat(100)));
+  assert.equal((s.match(/省略/g) ?? []).length, 2);
+  assert.ok(!s.includes('x'.repeat(1000)));
 });

@@ -99,7 +99,7 @@ function setup({ replies } = {}) {
   return { state, calls, usage, req, as: (u) => { who = u; } };
 }
 
-test('文脈に文字起こしと資料の目次が入り、要約は入らない', async () => {
+test('文脈に文字起こしと資料の全文が入り、要約は入らない', async () => {
   const { req, calls, usage } = setup();
   const res = await req('POST', '/api/minutes/M1/chat', { text: '値引きの話は出た？' });
   assert.equal(res.status, 200);
@@ -112,9 +112,9 @@ test('文脈に文字起こしと資料の目次が入り、要約は入らな�
   const sent = calls[0].body;
   const system = sent.systemInstruction.parts[0].text;
   assert.ok(system.includes(TRANSCRIPT));
-  assert.ok(system.includes('料金表'), 'PDF の目次');
-  assert.ok(system.includes('提案の概要'), 'pptx の目次');
-  assert.ok(system.includes('図.pdf'), '目次の無い資料は名前だけ');
+  assert.ok(system.includes('見積.pdf') && !system.includes('初年度の料金'), 'PDF は名前だけ');
+  assert.ok(system.includes('提案の概要') && system.includes('本文'), 'pptx の全文');
+  assert.ok(system.includes('図.pdf'), '中身の無い資料は名前だけ');
   assert.ok(!system.includes(SUMMARY_TEXT), '要約は入れない');
   assert.equal(sent.contents.at(-1).parts[0].text, '値引きの話は出た？');
   assert.equal(sent.generationConfig.maxOutputTokens, 4000);

@@ -174,7 +174,7 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 | `POST /api/dev/models` | 追加（同じ形）。`PATCH /api/dev/models/{id}` で変更・有効 / 無効 |
 | `GET /api/dev/models/available?provider=gemini` | 登録済みのキーで使えるモデル ID の一覧 `{ "items": ["gemini-3.8-flash", ...] }` |
 | `PUT /api/dev/model` | `{ "use": "card" | "transcribe" | "summarize", "modelId" }` |
-| `GET /api/dev/prompts/{kind}` | `{ "kind", "text", "version", "savedBy", "savedAt", "isDefault" }`。`kind` は `card` / `transcribe` / `summarize` / `qa` / `outline`（資料の目次）/ `summarize_materials`（資料を踏まえた議事録）。後ろの 2 つは「議事録」のモデルで動き、プロンプトだけを別に持つ |
+| `GET /api/dev/prompts/{kind}` | `{ "kind", "text", "version", "savedBy", "savedAt", "isDefault" }`。`kind` は `card` / `transcribe` / `summarize` / `qa` / `summarize_materials`（資料を踏まえた議事録）/ `outline`（資料の目次。2026-10-07 に廃止、画面には出さない。古い版の互換で API は受ける）。`summarize_materials` は「議事録」のモデルで動き、プロンプトだけを別に持つ |
 | `PUT /api/dev/prompts/{kind}` | `{ "text" }`。空文字で初期値に戻す。応答は GET と同じ |
 | `GET /api/dev/prompts/{kind}/history` | `{ "items": [{ "version", "savedBy", "savedAt", "text" }] }` |
 | `POST /api/dev/prompts/{kind}/revert` | `{ "version" }` |
@@ -240,12 +240,12 @@ Cloudflare 版は `departments`、`history/summary` の部署別、`import` を�
 | --- | --- |
 | `GET /api/minutes/{id}/materials` | `{ "items": [...] }` |
 | `POST /api/minutes/{id}/materials` | `{ "name", "kind", "size", "hasExtract": true }` → `{ "id", "seq", "file": { "url", "method": "PUT", "headers" }, "extract": { "url", "method": "PUT", "headers" } または null }`。作った人だけ。6 件目や 50MB 超は `validation`。`kind` は拡張子から画面が決める |
-| `PUT /api/minutes/{id}/materials/{matId}/done` | `{ "pages"?, "extracted": true または false }`。送り終えた印。PDF は `outlineStatus: pending`、pptx / xlsx は `none`（目次は機械的に作るため） |
+| `PUT /api/minutes/{id}/materials/{matId}/done` | `{ "pages"?, "extracted": true または false }`。送り終えた印。PDF は `outlineStatus: pending`、pptx / xlsx は `none`（`outlineStatus` は 2026-10-07 に廃止。目次は作らず、画面にも出さない。古い版との互換で値だけ残る） |
 | `DELETE /api/minutes/{id}/materials/{matId}` | 作った人だけ。ファイルと抜いた JSON と目次を消す |
 | `GET /api/minutes/{id}/materials/{matId}/url` | `{ "url", "expiresAt", "filename" }`。見られる人。元のファイルを開く / ダウンロードする |
 | `POST /api/minutes/{id}/regenerate` | `{ "target": "summary", "withMaterials": true }` を足す。資料が 0 件なら `validation` |
-| `GET /api/minutes/{id}/summary` | `{ "markdown", "version", "withMaterials", "mapping": [{ "material", "materialName", "page", "start", "end", "confidence" }] }`。`mapping` は資料を踏まえた版だけ |
-| `GET /api/dev/prompts/{kind}` ほか | `kind` に `outline` と `summarize_materials` を足す |
+| `GET /api/minutes/{id}/summary` | `{ "markdown", "version", "withMaterials", "mapping": [{ "material", "materialName", "page", "start", "end", "confidence" }] }`。`mapping` は 2026-10-07 に廃止。それ以前の資料を踏まえた版にだけ入り、新しい版は常に `[]`。画面は空なら対応表を出さない |
+| `GET /api/dev/prompts/{kind}` ほか | `kind` に `summarize_materials` を足す（`outline` は 2026-10-07 に廃止） |
 
 抜いた JSON（`extract`）の形は minutes-design.md §15.3、目次の形は §15.4、対応表と議事録の JSON は §15.5。
 

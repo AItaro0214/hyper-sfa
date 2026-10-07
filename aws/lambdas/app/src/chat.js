@@ -1,11 +1,11 @@
 // 議事録への質問（docs/minutes-design.md §16、api-contract.md「質問」）。
-// 渡すのは文字起こしの全文と資料の目次、会議の情報だけ。議事録（要約）は渡さない（要約の解釈に引きずられず、元の発言から答えさせるため）。
+// 渡すのは文字起こしの全文と資料の全文（pptx / xlsx。PDF は名前だけ）、会議の情報だけ。議事録（要約）は渡さない（要約の解釈に引きずられず、元の発言から答えさせるため）。
 // 30 秒の API Gateway の中で答えを返す同期の処理なので、モデルの呼び出しは app から直接行い、25 秒で打ち切る。
 import {
   renderPrompt, DEFAULT_MODELS, DEFAULT_SELECTION, DEFAULT_PROMPTS,
   buildChatGenerateRequest, parseGenerateResponse, classifyGeminiError,
   buildResponsesRequest, parseResponsesResponse, classifyOpenAIError,
-  outlineFromExtract, buildQaContext, trimTurns, usageEvent,
+  buildQaContext, trimTurns, usageEvent,
 } from '@hyper-sfa/core';
 import {
   ddb, K, s3, recordUsage, getSelection, getModel, getPrompt, getApiKey,
@@ -135,17 +135,11 @@ export function registerChatRoutes(app, deps = {}) {
   async function buildSystemText(meta) {
     const transcript = await readData(meta.transcript.key);
     const mats = await loadMaterials(meta.id);
-    const materials = await Promise.all(mats.map(async (m) => {
-      let outline = null;
-      if (m.kind === 'pdf') {
-        if (m.outlineStatus === 'done' && m.outlineKey) outline = await readJsonOrNull(m.outlineKey);
-      } else if (m.extractKey) {
-        // pptx / xlsx は、ブラウザが抜いた JSON から機械的に作る（議事録の作成と同じ）
-        const extract = await readJsonOrNull(m.extractKey);
-        outline = extract ? outlineFromExtract(extract, { name: m.name }) : null;
-      }
-      return { seq: m.seq, name: m.name, kind: m.kind, outline };
-    }));
+    // pptx / xlsx は、ブラウザが抜いた JSON の全文を渡す。PDF は同期の 25 秒に収めるため名前だけ（添付しない）
+    const materials = await Promise.all(mats.map(async (m) => ({
+      seq: m.seq, name: m.name, kind: m.kind,
+      extract: m.kind !== 'pdf' && m.extractKey ? await readJsonOrNull(m.extractKey) : null,
+    })));
     const prompt = await getPrompt('qa');
     return renderPrompt(prompt.text ?? DEFAULT_PROMPTS.qa, buildQaContext({ transcript, materials, minute: meta }));
   }

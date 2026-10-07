@@ -156,6 +156,12 @@ normalizeMapping(mapping, materials) // モデルの出力を整える（page �
 
 `prompts.js` に `DEFAULT_PROMPTS.outline` と `DEFAULT_PROMPTS.summarize_materials` を足す（文面は minutes-design.md §15.4 / §15.5 の方針で書く）。`PLACEHOLDERS.summarize_materials = ['TITLE', 'DATE', 'COUNTERPARTS', 'ATTENDEES', 'MEMO', 'MATERIALS', 'TRANSCRIPT']`。`PLACEHOLDERS.outline = ['NAME', 'KIND']`。
 
+**2026-10-07 以降、`outline`（`DEFAULT_PROMPTS.outline`、`PLACEHOLDERS.outline`、`OUTLINE_SCHEMA`、`outlineFromExtract`、`formatMaterialsForPrompt`）と `MATERIAL_SUMMARY_SCHEMA`、`normalizeMapping` は使わない**（古い版の互換と既存テストのために残してある。minutes-design.md §15.3b）。
+
+### 13b. `formatMaterialsFullText(materials, { maxChars = 400000 })`（2026-10-07 追加）
+
+`materials` は `[{ seq, name, kind, extract }]`（`extract` はブラウザで抜いた JSON。PDF は `extract: null` で渡し、「添付の PDF」とだけ書く）。pptx はスライドごとに番号・題・本文・ノート・グラフ（`chartToString`）を切らずに並べる。xlsx はシートごとに全行をタブ区切りで並べ、グラフも足す。合計が `maxChars` を超えたら、資料ごとに均等に後ろを切り「（長いので以降は省略）」を添える。資料が 1 件も文字を持たなければ「（文字で渡す資料はありません。添付の PDF を見てください）」。`pdfAttached: false` を渡すと PDF は「（PDF の中身は渡していません）」になる（質問は PDF を添付せず名前だけ渡すため）。
+
 ## 14. OpenAI の追加（`openai.js`）
 
 ```js
@@ -180,7 +186,7 @@ Gemini は既存の `buildGenerateRequest` に `parts: [{ fileData: { mimeType: 
 - `DEFAULT_SELECTION.qa`（初期値は `summarize` と同じ）。文章モデルの `uses` に `'qa'` を足す（Gemini の Flash / Pro、OpenAI の文章モデル。文字起こし専用のモデルには足さない）。
 - `gemini.js`: `buildChatGenerateRequest({ model, apiKey, systemText, turns: [{ role: 'user' | 'assistant', text }], thinkingLevel, maxOutputTokens })` → `systemInstruction` と `contents`（`role` は `user` / `model`）。応答は既存の `parseGenerateResponse`。
 - `openai.js`: `buildResponsesRequest` に `turns`（`[{ role, text }]`）を渡せるようにする（`input` が `[{ role: 'user' | 'assistant', content: [{ type: 'input_text' | 'output_text', text }] }]` の列になる）。
-- `qa.js`: `buildQaContext({ transcript, materials, minute })` → `{ TITLE, DATE, COUNTERPARTS, ATTENDEES, MEMO, MATERIALS, TRANSCRIPT }`（`formatMaterialsForPrompt` を使う）。`trimTurns(turns, max = 20)`。
+- `qa.js`: `buildQaContext({ transcript, materials, minute })` → `{ TITLE, DATE, COUNTERPARTS, ATTENDEES, MEMO, MATERIALS, TRANSCRIPT }`（`materials` は `[{ seq, name, kind, extract }]`。`formatMaterialsFullText(materials, { pdfAttached: false })` を使う。2026-10-07 に目次から全文へ）。`trimTurns(turns, max = 20)`。
 
 ## 16. `company.js` — 取引先の表記ゆれと集計
 

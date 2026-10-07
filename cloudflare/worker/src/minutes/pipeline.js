@@ -360,17 +360,15 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
       const tPrompt = await deps.getPrompt(env, 'transcribe');
       const sPrompt = await deps.getPrompt(env, 'summarize');
       let materials = [];
-      let oPrompt = null;
       let smPrompt = null;
       if (withMaterials) {
         materials = (
           await env.DB.prepare(
-            "SELECT id, seq, name, kind, size, pages, key, extract_key, outline_key, outline_status FROM minute_materials WHERE minute_id = ? AND outline_status != 'uploading' ORDER BY seq",
+            "SELECT id, seq, name, kind, size, pages, key, extract_key FROM minute_materials WHERE minute_id = ? AND outline_status != 'uploading' ORDER BY seq",
           )
             .bind(minuteId)
             .all()
         ).results;
-        oPrompt = (await deps.getPrompt(env, 'outline')).text;
         smPrompt = (await deps.getPrompt(env, 'summarize_materials')).text;
       }
       return {
@@ -390,7 +388,6 @@ export async function runMinutesPipeline({ env, deps, event, step }) {
         tPrompt: tPrompt.text,
         sPrompt: sPrompt.text,
         materials,
-        oPrompt,
         smPrompt,
       };
     });
@@ -632,234 +629,176 @@ async function saveSummary({ env, minuteId, cur, newKey, version, modelId, withM
   if (cur.summary_prev_mapping_key && cur.summary_prev_mapping_key !== mappingKey) await env.DATA.delete(cur.summary_prev_mapping_key);
 }
 
-const outlineKeyOf = (minuteId, m) => m.outline_key || `minutes/${minuteId}/materials/${m.id}.outline.json`;
-
-/** 目次の JSON を取り出す。sections が無ければ失敗（空の目次を保存しない）。途中で切れていれば読めた分を使う */
-function parseOutline(deps, text) {
-  let v;
-  try {
-    v = deps.extractJson(text).value;
-  } catch {
-    throw new StepError('empty', '目次を読み取れませんでした');
-  }
-  if (!v || !Array.isArray(v.sections) || v.sections.length === 0) throw new StepError('empty', '目次が空でした');
-  return v;
-}
-
-/** PDF 1 件の目次化。失敗しても例外にせず、その資料を failed にして呼び出し元は続行する */
-async function outlinePdf({ env, deps, step, guarded, loaded, minuteId, m }) {
-  const model = loaded.sModel;
-  const outlineKey = outlineKeyOf(minuteId, m);
-  const prompt = deps.renderPrompt(loaded.oPrompt, { NAME: m.name, KIND: m.kind });
-  let file = null;
-  let failure = null;
-
-  if (model.provider === 'gemini') {
-    const up = await guarded(`outline-upload-${m.seq}`, RETRY, async () => {
-      const apiKey = await deps.getApiKey(env, 'gemini');
-      return await uploadToGemini({ env, deps, apiKey, key: m.key, mimeType: 'application/pdf', displayName: `${minuteId}-mat-${m.seq}`, bucket: env.DATA });
-    });
-    if (up.ok) {
-      file = up.value;
-      // 預けた直後は PROCESSING のことがある。ACTIVE になるまで、寝てから確かめる
-      for (let i = 0; file.state !== 'ACTIVE' && file.state !== 'FAILED' && i < POLL_MAX; i++) {
-        await step.sleep(`outline-wait-${m.seq}-${i}`, '3 seconds');
-        const cur = file;
-        const st = await guarded(`outline-check-${m.seq}-${i}`, SMALL, async () => {
-          const apiKey = await deps.getApiKey(env, 'gemini');
-          const j = await getGeminiFileState({ deps, apiKey, name: cur.name });
-          return { ...cur, state: j?.state ?? cur.state };
-        });
-        if (!st.ok) {
-          failure = st.failure;
-          break;
-        }
-        file = st.value;
-      }
-      if (!failure && file.state !== 'ACTIVE') failure = { kind: 'provider', message: '資料の準備が終わりませんでした', retryable: true };
-    } else {
-      failure = up.failure;
+/** 保存済みの古いプロンプトが JSON（{"markdown": ...}）で返すよう指示していても、中身を使う。普通の文章ならそのまま */
+function markdownFromResponse(deps, text) {
+  const t = String(text ?? '').trim();
+  if (t.startsWith('{') || t.startsWith('```')) {
+    try {
+      const ex = deps.extractJson(t);
+      if (!ex.truncated && typeof ex.value?.markdown === 'string' && ex.value.markdown.trim()) return ex.value.markdown;
+    } catch {
+      // JSON ではない文章なので、そのまま使う
     }
   }
-
-  if (!failure) {
-    const r = await guarded(`outline-${m.seq}`, RETRY, async () => {
-      const apiKey = await deps.getApiKey(env, model.provider);
-      let out;
-      let openaiFileId = null;
-      try {
-        if (model.provider === 'gemini') {
-          out = await callGemini({
-            deps,
-            apiKey,
-            model,
-            prompt,
-            parts: [{ fileData: { fileUri: file.uri, mimeType: file.mimeType || 'application/pdf' } }],
-            schema: deps.OUTLINE_SCHEMA, // buildGenerateRequest が Gemini 向けに type を大文字にする
-            maxOutputTokens: 32768,
-          });
-        } else {
-          openaiFileId = await uploadToOpenAI({ env, deps, apiKey, key: m.key, filename: m.name, contentType: 'application/pdf' });
-          out = await callOpenAIResponses({
-            deps,
-            apiKey,
-            model,
-            parts: [{ type: 'input_file', fileId: openaiFileId }, { type: 'input_text', text: prompt }],
-            jsonSchema: deps.OUTLINE_SCHEMA,
-            schemaName: 'outline',
-            maxOutputTokens: 32768,
-          });
-        }
-      } catch (e) {
-        await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: toFailure(e).kind, retry: true });
-        throw e;
-      } finally {
-        // 預けた資料は使い終わったらすぐ消す。失敗しても続ける
-        if (openaiFileId) await deleteOpenAIFile({ deps, apiKey, fileId: openaiFileId }).catch(() => {});
-      }
-      const outline = parseOutline(deps, out.text);
-      await env.DATA.put(outlineKey, JSON.stringify(outline));
-      await env.DB.prepare("UPDATE minute_materials SET outline_key = ?, outline_status = 'done' WHERE id = ?").bind(outlineKey, m.id).run();
-      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: true, usage: out.usage, retry: true });
-      return { key: outlineKey };
-    });
-    if (!r.ok) failure = r.failure;
-  }
-
-  if (file?.name) {
-    const name = file.name;
-    await step.do(`outline-cleanup-${m.seq}`, SMALL, async () => {
-      try {
-        await deleteGeminiFile({ deps, apiKey: await deps.getApiKey(env, 'gemini'), name });
-      } catch {
-        // 無視
-      }
-      return true;
-    });
-  }
-  if (failure) {
-    // 目次が作れなくても議事録は作る。その資料は名前だけ渡す
-    await step.do(`outline-failed-${m.seq}`, SMALL, async () => {
-      await env.DB.prepare("UPDATE minute_materials SET outline_status = 'failed' WHERE id = ?").bind(m.id).run();
-      return true;
-    });
-  }
+  return t;
 }
 
 /**
- * 資料を踏まえた議事録（minutes-design.md §15.4 / §15.5）。guarded と同じ { ok, value | failure } を返す。
- * 1 段目: PDF はモデルで、pptx / xlsx は抜いた JSON から機械的に、資料ごとの目次にする。
- * 2 段目: 目次 + 文字起こしから、対応表と議事録を JSON で 1 回で出させる。
+ * PDF 1 件を Gemini の Files API に R2 からストリームで預け、ACTIVE になるまで待つ（Worker は中身を読まない）。
+ * 失敗は { ok: false, failure }。預けたあとで失敗したときも file を返し、呼び出し元が消せるようにする。
+ */
+async function putPdfToGemini({ env, deps, step, guarded, minuteId, m }) {
+  const up = await guarded(`material-upload-${m.seq}`, RETRY, async () => {
+    const apiKey = await deps.getApiKey(env, 'gemini');
+    return await uploadToGemini({ env, deps, apiKey, key: m.key, mimeType: 'application/pdf', displayName: `${minuteId}-mat-${m.seq}`, bucket: env.DATA });
+  });
+  if (!up.ok) return { ok: false, failure: up.failure, file: null };
+  let file = up.value;
+  // 預けた直後は PROCESSING のことがある。ACTIVE になるまで、寝てから確かめる
+  for (let i = 0; file.state !== 'ACTIVE' && file.state !== 'FAILED' && i < POLL_MAX; i++) {
+    await step.sleep(`material-wait-${m.seq}-${i}`, '3 seconds');
+    const cur = file;
+    const st = await guarded(`material-check-${m.seq}-${i}`, SMALL, async () => {
+      const apiKey = await deps.getApiKey(env, 'gemini');
+      const j = await getGeminiFileState({ deps, apiKey, name: cur.name });
+      return { ...cur, state: j?.state ?? cur.state };
+    });
+    if (!st.ok) return { ok: false, failure: st.failure, file };
+    file = st.value;
+  }
+  if (file.state !== 'ACTIVE') {
+    return { ok: false, failure: { kind: 'provider', message: '資料の準備が終わりませんでした', retryable: true }, file };
+  }
+  return { ok: true, file };
+}
+
+/**
+ * 資料を踏まえた議事録（minutes-design.md §15.3b）。guarded と同じ { ok, value | failure } を返す。
+ * 目次化も対応表もしない。資料をそのまま議事録のモデルに 1 回で渡す。
+ * - PDF: Gemini は Files API に R2 からストリームで預けて fileData、OpenAI は Files API に預けて input_file
+ * - pptx / xlsx: R2 の抜いた JSON を読み、formatMaterialsFullText で文字にして prompt に入れる
  */
 async function summarizeWithMaterials({ env, deps, step, guarded, loaded, minuteId }) {
   const model = loaded.sModel;
   const mats = loaded.materials ?? [];
   if (mats.length === 0) return { ok: false, failure: { kind: 'empty', message: '資料がありません', retryable: false } };
 
-  await step.do('status-outline', SMALL, async () => {
-    await env.DB.prepare("UPDATE minutes SET status = 'summarizing', step = 'outline', failure = NULL, updated_at = ? WHERE id = ?")
+  await step.do('status-summarize-materials', SMALL, async () => {
+    await env.DB.prepare("UPDATE minutes SET status = 'summarizing', step = 'summarize_materials', failure = NULL, updated_at = ? WHERE id = ?")
       .bind(nowIso(), minuteId)
       .run();
     return true;
   });
 
-  for (const m of mats) {
-    if (m.kind === 'pdf') {
-      // done は作り直さない。failed は、利用者が「作り直す」を押したので、もう一度試す
-      if (m.outline_status !== 'pending' && m.outline_status !== 'failed') continue;
-      await outlinePdf({ env, deps, step, guarded, loaded, minuteId, m });
-    } else if (m.extract_key) {
-      // 文章の JSON なので Worker で読んでよい。モデルは使わない。失敗しても名前だけ渡して続ける
-      await guarded(`outline-${m.seq}`, SMALL, async () => {
-        const o = await env.DATA.get(m.extract_key);
-        if (!o) throw new StepError('material_missing', '抜いた内容が見つかりません', false);
-        const outline = deps.outlineFromExtract(JSON.parse(await o.text()), { name: m.name });
-        await env.DATA.put(outlineKeyOf(minuteId, m), JSON.stringify(outline));
-        return true;
-      });
+  // Gemini の PDF は、議事録の呼び出しの前に預けておく（待ちに step.sleep を使うため step の外で）
+  const geminiFiles = new Map(); // seq → file
+  const toDelete = [];
+  let failure = null;
+  if (model.provider === 'gemini') {
+    for (const m of mats.filter((x) => x.kind === 'pdf')) {
+      const r = await putPdfToGemini({ env, deps, step, guarded, minuteId, m });
+      if (r.file?.name) toDelete.push(r.file.name);
+      if (!r.ok) {
+        failure = r.failure;
+        break;
+      }
+      geminiFiles.set(m.seq, r.file);
     }
   }
 
-  return await guarded('summarize-materials', { ...RETRY, timeout: '10 minutes' }, async () => {
-    const cur = await env.DB.prepare('SELECT transcript_key, summary_key, summary_prev_key, summary_prev_mapping_key FROM minutes WHERE id = ?').bind(minuteId).first();
-    if (!cur?.transcript_key) throw new StepError('empty', '文字起こしがありません', false);
-    await env.DB.prepare("UPDATE minutes SET status = 'summarizing', step = 'summarize_materials', failure = NULL, updated_at = ? WHERE id = ?")
-      .bind(nowIso(), minuteId)
-      .run();
-    const to = await env.DATA.get(cur.transcript_key);
-    const transcript = to ? await to.text() : '';
-    // 目次が作れていない資料は outline: null（名前だけ渡る）
-    const withOutline = [];
-    for (const m of mats) {
-      let outline = null;
-      const o = await env.DATA.get(outlineKeyOf(minuteId, m));
-      if (o) {
+  let result;
+  if (failure) {
+    result = { ok: false, failure };
+  } else {
+    result = await guarded('summarize-materials', { ...RETRY, timeout: '10 minutes' }, async () => {
+      const cur = await env.DB.prepare('SELECT transcript_key, summary_key, summary_prev_key, summary_prev_mapping_key FROM minutes WHERE id = ?').bind(minuteId).first();
+      if (!cur?.transcript_key) throw new StepError('empty', '文字起こしがありません', false);
+      const to = await env.DATA.get(cur.transcript_key);
+      const transcript = to ? await to.text() : '';
+      const apiKey = await deps.getApiKey(env, model.provider);
+
+      // 文字で渡す資料。pptx / xlsx は文章の JSON なので Worker で読んでよい。読めない資料は名前だけ渡して続ける
+      const list = [];
+      for (const m of mats) {
+        let extract = null;
+        if (m.kind !== 'pdf' && m.extract_key) {
+          const o = await env.DATA.get(m.extract_key);
+          if (o) {
+            try {
+              extract = JSON.parse(await o.text());
+            } catch {
+              extract = null;
+            }
+          }
+        }
+        list.push({ seq: m.seq, name: m.name, kind: m.kind, extract });
+      }
+      const prompt = deps.renderPrompt(loaded.smPrompt, {
+        ...loaded.vars,
+        MATERIALS: deps.formatMaterialsFullText(list),
+        TRANSCRIPT: transcript,
+      });
+
+      // parts の順は「PDF（資料の順）→ プロンプトの文」
+      const openaiFileIds = [];
+      let r;
+      try {
+        if (model.provider === 'gemini') {
+          const parts = mats
+            .filter((m) => m.kind === 'pdf')
+            .map((m) => ({ fileData: { fileUri: geminiFiles.get(m.seq).uri, mimeType: geminiFiles.get(m.seq).mimeType || 'application/pdf' } }));
+          r = await callGemini({ deps, apiKey, model, prompt, parts, maxOutputTokens: 32768 });
+        } else {
+          const parts = [];
+          for (const m of mats.filter((x) => x.kind === 'pdf')) {
+            const fileId = await uploadToOpenAI({ env, deps, apiKey, key: m.key, filename: m.name, contentType: 'application/pdf' });
+            openaiFileIds.push(fileId);
+            parts.push({ type: 'input_file', fileId });
+          }
+          parts.push({ type: 'input_text', text: prompt });
+          r = await callOpenAIResponses({ deps, apiKey, model, parts, maxOutputTokens: 32768 });
+        }
+      } catch (e) {
+        await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: toFailure(e).kind, retry: true });
+        throw e;
+      } finally {
+        // 預けた資料は使い終わったらすぐ消す。失敗しても続ける
+        for (const fileId of openaiFileIds) await deleteOpenAIFile({ deps, apiKey, fileId }).catch(() => {});
+      }
+      const markdown = markdownFromResponse(deps, r.text);
+      const newKey = `minutes/${minuteId}/summary-v${loaded.sVersion}.md`;
+      await env.DATA.put(newKey, markdown);
+      // 対応表は作らない（mappingKey: null）
+      await saveSummary({
+        env,
+        minuteId,
+        cur,
+        newKey,
+        version: loaded.sVersion,
+        modelId: model.id,
+        withMaterials: true,
+        materialIds: mats.map((m) => m.id),
+        mappingKey: null,
+      });
+      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: true, usage: r.usage, retry: true });
+      return { key: newKey };
+    });
+  }
+
+  if (toDelete.length) {
+    await step.do('material-cleanup', SMALL, async () => {
+      const apiKey = await deps.getApiKey(env, 'gemini');
+      for (const name of toDelete) {
         try {
-          outline = JSON.parse(await o.text());
+          await deleteGeminiFile({ deps, apiKey, name });
         } catch {
-          outline = null;
+          // 無視（48 時間で消える）
         }
       }
-      withOutline.push({ seq: m.seq, name: m.name, kind: m.kind, outline });
-    }
-    const prompt = deps.renderPrompt(loaded.smPrompt, {
-      ...loaded.vars,
-      MATERIALS: deps.formatMaterialsForPrompt(withOutline),
-      TRANSCRIPT: transcript,
+      return true;
     });
-    const apiKey = await deps.getApiKey(env, model.provider);
-    let r;
-    try {
-      r =
-        model.provider === 'gemini'
-          ? await callGemini({ deps, apiKey, model, prompt, parts: [], schema: deps.MATERIAL_SUMMARY_SCHEMA, maxOutputTokens: 32768 })
-          : await callOpenAIResponses({
-              deps,
-              apiKey,
-              model,
-              parts: [{ type: 'input_text', text: prompt }],
-              jsonSchema: deps.MATERIAL_SUMMARY_SCHEMA,
-              schemaName: 'material_summary',
-              maxOutputTokens: 32768,
-            });
-    } catch (e) {
-      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: toFailure(e).kind, retry: true });
-      throw e;
-    }
-    let parsed;
-    try {
-      const ex = deps.extractJson(r.text);
-      if (ex.truncated) throw new Error('truncated');
-      parsed = ex.value;
-    } catch {
-      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: 'empty', retry: true, usage: r.usage });
-      throw new StepError('empty', '結果を読み取れませんでした');
-    }
-    if (typeof parsed?.markdown !== 'string' || !parsed.markdown.trim()) {
-      await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: false, failureKind: 'empty', retry: true, usage: r.usage });
-      throw new StepError('empty', '結果が空でした');
-    }
-    const nameBySeq = new Map(mats.map((m) => [Number(m.seq), m.name]));
-    // 資料を後から消されても名前が出せるよう、対応表に名前を持たせる
-    const mapping = deps.normalizeMapping(parsed.mapping, mats).map((x) => ({ ...x, materialName: nameBySeq.get(x.material) ?? '' }));
-    const newKey = `minutes/${minuteId}/summary-v${loaded.sVersion}.md`;
-    const mappingKey = `minutes/${minuteId}/summary-mapping-v${loaded.sVersion}.json`;
-    await env.DATA.put(newKey, parsed.markdown);
-    await env.DATA.put(mappingKey, JSON.stringify(mapping));
-    await saveSummary({
-      env,
-      minuteId,
-      cur,
-      newKey,
-      version: loaded.sVersion,
-      modelId: model.id,
-      withMaterials: true,
-      materialIds: mats.map((m) => m.id),
-      mappingKey,
-    });
-    await recordUse(env, deps, { kind: 'summarize', userId: loaded.owner, model, ok: true, usage: r.usage, retry: true });
-    return { key: newKey };
-  });
+  }
+  return result;
 }
 
 /** 開発コンソールの「試し」。結果は settings の test:<jobId> に書く */

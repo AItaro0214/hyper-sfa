@@ -1,5 +1,5 @@
 // @hyper-sfa/aws-shared の入口。Lambda はここから読み込む。
-export { ddb, isConditionFailed } from './ddb.js';
+export { ddb, isConditionFailed, isTransactionConflict } from './ddb.js';
 export { K, shardOf, GSI1_SHARDS } from './keys.js';
 export { s3 } from './s3.js';
 export { getApiKey, putApiKey, getKeyMeta } from './secrets.js';

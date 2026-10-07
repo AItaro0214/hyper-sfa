@@ -22,9 +22,25 @@ function table() {
 const INDEX_KEYS = { gsi1: ['gsi1pk', 'gsi1sk'], gsi2: ['gsi2pk', 'gsi2sk'] };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const TRANSACT_RETRIES = 3;
+const TRANSACT_BASE_MS = 50;
+
+/**
+ * トランザクションが、条件の不一致ではなく「同じ項目への同時のトランザクション」だけで拒否されたか。
+ * 理由に ConditionalCheckFailed が 1 つでもあれば false（それは先を越された合図なので、やり直さない）。
+ */
+export function isTransactionConflict(err) {
+  if (err?.name === 'TransactionConflictException') return true;
+  if (err?.name !== 'TransactionCanceledException') return false;
+  const codes = (err.CancellationReasons ?? []).map((r) => r?.Code ?? 'None');
+  return codes.includes('TransactionConflict') && !codes.includes('ConditionalCheckFailed');
+}
+
 /** 条件付き書き込みが条件に合わなかった（トランザクション内も含む）か。 */
 export function isConditionFailed(err) {
   if (err?.name === 'ConditionalCheckFailedException') return true;
+  // やり直しても同時のトランザクションが続いた場合も、利用者には「ほかの人が先に更新した」（409）として返す
+  if (isTransactionConflict(err)) return true;
   if (err?.name === 'TransactionCanceledException') {
     return (err.CancellationReasons ?? []).some((r) => r?.Code === 'ConditionalCheckFailed');
   }
@@ -186,6 +202,17 @@ export const ddb = {
       throw new Error('transact: 不明な操作です');
     });
     if (items.length > 25) throw new Error('transact: 操作が多すぎます');
-    await client().send(new TransactWriteCommand({ TransactItems: items }));
+    // 同じ項目に別のトランザクションが同時に走っていると、条件に関係なく TransactionConflict で拒否される。
+    // 少し待ってやり直せば条件が改めて判定される（先を越されていれば ConditionalCheckFailed → 409、そうでなければ通る）。
+    // ここで吸収しないと、利用者には 500 として見えてしまう
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await client().send(new TransactWriteCommand({ TransactItems: items }));
+        return;
+      } catch (e) {
+        if (!isTransactionConflict(e) || attempt >= TRANSACT_RETRIES) throw e;
+        await sleep(TRANSACT_BASE_MS * 2 ** attempt + Math.floor(Math.random() * TRANSACT_BASE_MS));
+      }
+    }
   },
 };
